@@ -23,5 +23,99 @@
       "enabled": false
     },
     "singleProjectMode": true
+  },
+  "hosting": {
+    "public": "dist",
+    "predeploy": [
+      "npm run build",
+      "node scripts/prepare-hosting.mjs"
+    ],
+    "ignore": [
+      "**/.*",
+      "**/*.map"
+    ],
+    "redirects": [
+      {
+        "source": "/landing/login.html",
+        "destination": "/login",
+        "type": 301
+      },
+      {
+        "source": "/landing/register.html",
+        "destination": "/register",
+        "type": 301
+      },
+      {
+        "source": "/nfc/",
+        "destination": "/nfc",
+        "type": 301
+      },
+      {
+        "source": "/dashboard/",
+        "destination": "/dashboard",
+        "type": 301
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "run": {
+          "serviceId": "smartwatts-api",
+          "region": "asia-southeast1"
+        }
+      },
+      {
+        "source": "/",
+        "destination": "/landing/index.html"
+      },
+      {
+        "source": "/login",
+        "destination": "/landing/login.html"
+      },
+      {
+        "source": "/register",
+        "destination": "/landing/register.html"
+      },
+      {
+        "source": "/forgot-password",
+        "destination": "/landing/forgot-password.html"
+      },
+      {
+        "source": "/reset-password",
+        "destination": "/landing/reset-password.html"
+      },
+      {
+        "source": "/nfc",
+        "destination": "/nfc.html"
+      },
+      {
+        "source": "/dashboard",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "/sw.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "/nfc",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          },
+          {
+            "key": "Referrer-Policy",
+            "value": "no-referrer"
+          }
+        ]
+      }
+    ]
   }
 }

@@ -129,6 +129,22 @@ function setupChecklist(ctx, property) {
         <button class="btn btn-outline btn-small" data-page="${page}">${complete ? "Review" : "Set up"}</button></li>`).join("")}</ol>`);
 }
 
+/**
+ * One calendar record per exact billing period: the property total across its utility meters.
+ * Without this, bills of different meters for the same month were compared with each other.
+ */
+function propertyPeriodTotals(bills) {
+  const totals = new Map();
+  for (const b of bills) {
+    const key = `${b.periodStart}|${b.periodEnd}`;
+    const t = totals.get(key) ?? { periodStart: b.periodStart, periodEnd: b.periodEnd, wh: 0, amountCentavos: 0, kind: "recorded" };
+    t.wh += b.totalWh;
+    t.amountCentavos += b.amountCentavos;
+    totals.set(key, t);
+  }
+  return [...totals.values()].map(({ wh, ...t }) => ({ ...t, kwh: wh / 1000 }));
+}
+
 async function loadOverview(ctx, root) {
   const property = await propertyHeader(root);
   const e = property.entitlement;
@@ -180,9 +196,7 @@ async function loadOverview(ctx, root) {
         "No bills recorded yet. Add one on the Utility Bills page.",
       ))}
     </div>
-    <div style="margin-top:14px">${ctx.panel("Property billing calendar", calendarSection(ctx, `owner-${pid()}`, analytics.bills.map((b) => ({
-      periodStart: b.periodStart, periodEnd: b.periodEnd, kwh: b.totalWh / 1000, amountCentavos: b.amountCentavos, kind: "recorded",
-    }))))}</div>`);
+    <div style="margin-top:14px">${ctx.panel("Property billing calendar", calendarSection(ctx, `owner-${pid()}`, propertyPeriodTotals(analytics.bills)))}</div>`);
 }
 
 // ------------------------------------------------------------ analytics

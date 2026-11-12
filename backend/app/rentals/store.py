@@ -68,6 +68,11 @@ class InMemoryStore:
             doc.update(copy.deepcopy(_strip_id(changes)))
             return True
 
+    def delete(self, collection: str, doc_id: str) -> None:
+        """Used only by the emulator demo-fixture rollback; the Rentals service never deletes records."""
+        with self._lock:
+            self._data.get(collection, {}).pop(doc_id, None)
+
     def query(self, collection: str, **equals: Any) -> list[dict]:
         with self._lock:
             return [
@@ -129,6 +134,10 @@ class FirestoreStore:
             return True
 
         return apply(self._db.transaction())
+
+    def delete(self, collection: str, doc_id: str) -> None:
+        """Used only by the emulator demo-fixture rollback; the Rentals service never deletes records."""
+        self._ref(collection, doc_id).delete()
 
     def query(self, collection: str, **equals: Any) -> list[dict]:
         from google.cloud.firestore_v1.base_query import FieldFilter

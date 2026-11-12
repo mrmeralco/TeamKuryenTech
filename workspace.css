@@ -501,3 +501,9 @@ body.theme-dark .platform-action[open]>form{background:#24211c;border-color:#514
 .settings-menu[role="tablist"] button:focus-visible,.account-settings-panel :focus-visible{outline:3px solid var(--orange);outline-offset:2px}
 @media(max-width:800px){.settings-menu[role="tablist"]{grid-template-columns:repeat(2,minmax(0,1fr))}.settings-menu[role="tablist"] button{text-align:center}}
 body.theme-dark .settings-menu[role="tablist"] button[aria-selected="true"]{background:#3a2a10;color:#ffd08e}
+
+/* Synthetic demo-fixture property (emulator demo seed): always-visible "Demo Data" label. */
+.demo-data-banner{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:0 0 14px;padding:10px 14px;border:1px dashed #b45309;border-radius:12px;background:#fffbeb;color:#78350f;font-size:13px;line-height:1.4}
+.demo-data-banner strong{padding:2px 8px;border-radius:999px;background:#b45309;color:#fff;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+body.theme-dark .demo-data-banner{background:#2a1f0b;border-color:#f59e0b;color:#fde68a}
+body.theme-dark .demo-data-banner strong{background:#f59e0b;color:#1c1300}

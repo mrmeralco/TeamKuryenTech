@@ -13,7 +13,29 @@ export const auth = getAuth(app);
 if (authEmulatorUrl && !auth.emulatorConfig) connectAuthEmulator(auth, authEmulatorUrl, { disableWarnings: true });
 export { DASHBOARD_URL };
 
-export function goToDashboard() { window.location.replace(DASHBOARD_URL); }
+// Post-login return (e.g. an NFC card tapped while signed out arrives as "/login#next=nfc").
+// Only allowlisted KEYS are accepted and mapped to fixed same-origin paths, so no URL from the
+// address bar is ever used as a redirect target. The key lives in this tab's sessionStorage so it
+// survives moving between login and register, and is consumed once.
+const RETURN_KEY = "smartwatts-return-to";
+const RETURN_TARGETS = { nfc: "/nfc" };
+(function captureReturnTarget() {
+  const match = window.location.hash.match(/^#next=([a-z]{1,20})$/);
+  if (!match || !Object.prototype.hasOwnProperty.call(RETURN_TARGETS, match[1])) return;
+  try { sessionStorage.setItem(RETURN_KEY, match[1]); } catch { return; }
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+})();
+
+export function consumeReturnTarget() {
+  let key = null;
+  try {
+    key = sessionStorage.getItem(RETURN_KEY);
+    sessionStorage.removeItem(RETURN_KEY);
+  } catch { key = null; }
+  return key && Object.prototype.hasOwnProperty.call(RETURN_TARGETS, key) ? RETURN_TARGETS[key] : null;
+}
+
+export function goToDashboard() { window.location.replace(consumeReturnTarget() ?? DASHBOARD_URL); }
 
 /** Resolves with the current user once Firebase has restored the session. */
 export async function currentUser() {

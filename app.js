@@ -542,6 +542,13 @@ function renderNavigation() {
     .join("");
 }
 
+/** Visible on every page of a synthetic demo-fixture property (label comes from the server). */
+function demoDataBanner() {
+  const { type, demoLabel } = getWorkspace();
+  if (type === "personal" || !demoLabel) return "";
+  return `<div class="demo-data-banner" role="note" data-testid="demo-data-banner"><strong>Demo Data</strong><span>${escapeHtml(demoLabel)} — synthetic sample records, not real electricity usage, tariffs, or payments.</span></div>`;
+}
+
 function renderPageHeading() {
   const [title, subtitle] = pageTitles[currentPage];
   $("#pageTitle").textContent = currentPage === "dashboard" ? greeting() : title;
@@ -1367,7 +1374,7 @@ function render() {
   renderPageHeading();
   const modulePage = modulePages[currentPage];
   const content = $("#content");
-  content.innerHTML = modulePage ? modulePage.render(pageContext) : pageRenderers[currentPage]();
+  content.innerHTML = demoDataBanner() + (modulePage ? modulePage.render(pageContext) : pageRenderers[currentPage]());
   document.body.classList.toggle("workspace-rental", getWorkspace().type !== "personal");
   renderCharts();
   renderGameChrome(currentPage);

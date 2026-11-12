@@ -15,7 +15,10 @@
     "test:backend:emulator": "firebase emulators:exec --only firestore --project demo-smartwatts \"backend/.venv/bin/python -m pytest backend/tests/test_firestore_store.py\"",
     "typecheck": "tsc -b",
     "test:e2e:rentals": "firebase emulators:exec --only auth,firestore --project demo-smartwatts \"playwright test --config playwright.rentals.config.ts\"",
-    "test:e2e:mapbox": "playwright test --config playwright.mapbox.config.ts"
+    "test:e2e:mapbox": "playwright test --config playwright.mapbox.config.ts",
+    "test:e2e:nfc": "firebase emulators:exec --only auth --project demo-smartwatts \"playwright test --config playwright.nfc.config.ts\"",
+    "demo:emulator": "bash scripts/demo-emulator.sh",
+    "test:e2e:demo": "firebase emulators:exec --config firebase.demo.json --only auth,firestore --project demo-smartwatts \"playwright test --config playwright.demo.config.ts\""
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.4.1",

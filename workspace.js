@@ -53,6 +53,8 @@ export function getWorkspace() {
     propertyId: membership.propertyId,
     propertyName: membership.propertyName,
     unitLabel: membership.unitLabel,
+    // Set by the server only for synthetic demo-fixture properties; the shell shows a "Demo Data" banner.
+    demoLabel: typeof membership.demoLabel === "string" ? membership.demoLabel : null,
   };
 }
 

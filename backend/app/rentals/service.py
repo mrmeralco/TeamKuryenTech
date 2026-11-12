@@ -240,14 +240,17 @@ class RentalService:
             if membership.get("unitId"):
                 unit = self.store.get(self._col(prop["id"], "units"), membership["unitId"])
                 unit_label = unit.get("label") if unit else None
-            memberships.append({
+            entry = {
                 "propertyId": prop["id"],
                 "propertyName": prop["name"],
                 "lifecycle": self.entitlement(prop["id"])["lifecycle"] if membership["role"] in MANAGERS else None,
                 "role": membership["role"],
                 "unitId": membership.get("unitId"),
                 "unitLabel": unit_label,
-            })
+            }
+            if prop.get("demoLabel"):
+                entry["demoLabel"] = prop["demoLabel"]
+            memberships.append(entry)
         memberships.sort(key=lambda item: (item["propertyName"].lower(), item["role"]))
         return {
             # Every account always has the free personal workspace (Tier 1).
@@ -295,6 +298,9 @@ class RentalService:
         if prop is None:
             raise NotFound("Property not found.")
         result = {"id": pid, "name": prop["name"], "role": membership["role"]}
+        if prop.get("demoLabel"):
+            # Synthetic demo-fixture property (emulator seed): the UI must label it as sample data.
+            result["demoLabel"] = prop["demoLabel"]
         if membership["role"] in MANAGERS:
             result.update({"address": prop["address"], "entitlement": self.entitlement(pid), "setup": self._setup_progress(pid)})
         return result
@@ -465,20 +471,31 @@ class RentalService:
                 "costChangePercent": cost_change_pct,
             })
 
+        # Property-level trend: total of every utility bill per exact billing period, compared with the previous
+        # period only when both periods cover the same meters (otherwise the totals are not comparable).
+        period_totals: dict[tuple[str, str], dict] = {}
+        for b in active_bills:
+            total = period_totals.setdefault((b["periodStart"], b["periodEnd"]), {"wh": 0, "centavos": 0, "meters": set()})
+            total["wh"] += b["totalWh"]
+            total["centavos"] += b["amountCentavos"]
+            total["meters"].add(b["meterId"])
         period_over_period = None
-        if len(periods) >= 2:
-            cur_p = periods[-1]
-            prev_p = periods[-2]
-            kwh_diff = cur_p["utilityKwh"] - prev_p["utilityKwh"]
-            cost_diff_centavos = cur_p["utilityAmountCentavos"] - prev_p["utilityAmountCentavos"]
-            period_over_period = {
-                "currentPeriod": f"{cur_p['periodStart']} to {cur_p['periodEnd']}",
-                "previousPeriod": f"{prev_p['periodStart']} to {prev_p['periodEnd']}",
-                "kwhChange": round(kwh_diff, 2),
-                "kwhChangePercent": cur_p["kwhChangePercent"],
-                "costChangeCentavos": cost_diff_centavos,
-                "costChangePercent": cur_p["costChangePercent"],
-            }
+        ordered_periods = sorted(period_totals)
+        if len(ordered_periods) >= 2:
+            cur_key, prev_key = ordered_periods[-1], ordered_periods[-2]
+            cur_t, prev_t = period_totals[cur_key], period_totals[prev_key]
+            if cur_t["meters"] == prev_t["meters"]:
+                kwh_diff = (cur_t["wh"] - prev_t["wh"]) / 1000
+                cost_diff_centavos = cur_t["centavos"] - prev_t["centavos"]
+                period_over_period = {
+                    "currentPeriod": f"{cur_key[0]} to {cur_key[1]}",
+                    "previousPeriod": f"{prev_key[0]} to {prev_key[1]}",
+                    "kwhChange": round(kwh_diff, 2),
+                    "kwhChangePercent": round((cur_t["wh"] - prev_t["wh"]) / prev_t["wh"] * 100, 1) if prev_t["wh"] else None,
+                    "costChangeCentavos": cost_diff_centavos,
+                    "costChangePercent": round(cost_diff_centavos / prev_t["centavos"] * 100, 1) if prev_t["centavos"] else None,
+                    "meterCount": len(cur_t["meters"]),
+                }
 
         # Unit-level analytics
         units_analytics = []
@@ -1650,10 +1667,13 @@ class RentalService:
                     "unitWeight": mine["weight"], "totalWeight": sum(s["weight"] for s in agreement["shares"]),
                     "effectiveFrom": agreement["effectiveFrom"], "effectiveTo": agreement.get("effectiveTo"),
                 })
-        return {
+        result = {
             "propertyName": prop.get("name"), "propertyAddress": prop.get("address"),
             "unitId": unit["id"], "unitLabel": unit["label"], "meters": assigned, "sharedArrangements": shared,
         }
+        if prop.get("demoLabel"):
+            result["demoLabel"] = prop["demoLabel"]
+        return result
 
     def request_statement_review(self, user: AuthUser, pid: str, statement_id: str, payload: dict) -> dict:
         """A tenant asks the owner to re-check a published statement. No payment or dispute ruling happens here."""
