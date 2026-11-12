@@ -13,7 +13,10 @@ from typing import Annotated
 
 import firebase_admin
 import google.auth
-from fastapi import Depends, Header, HTTPException
+import hashlib
+import hmac
+
+from fastapi import Depends, Header, HTTPException, Request
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials
 from firebase_admin.exceptions import FirebaseError
@@ -67,16 +70,25 @@ class _PublicKeysOnly(credentials.Base):
         return AnonymousCredentials()
 
 
-def require_user(authorization: Annotated[str | None, Header()] = None) -> AuthUser:
+def _flag_strike(request: Request | None, reason: str) -> None:
+    """Asks the security middleware to count a strike against this client (3 strikes = 15-minute ban)."""
+    if request is not None:
+        request.state.security_strike = reason
+
+
+def require_user(request: Request, authorization: Annotated[str | None, Header()] = None) -> AuthUser:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="A Firebase sign-in is required.")
 
     firebase_app = get_firebase_app()
     try:
         claims = firebase_auth.verify_id_token(authorization.removeprefix("Bearer ").strip(), app=firebase_app)
-    except (firebase_auth.InvalidIdTokenError, firebase_auth.ExpiredIdTokenError, firebase_auth.RevokedIdTokenError):
+    except (firebase_auth.ExpiredIdTokenError, firebase_auth.RevokedIdTokenError):
+        # Normal for real users (an old tab, a signed-out session): no strike.
         raise HTTPException(status_code=401, detail="The Firebase sign-in token is invalid or expired.")
-    except ValueError:
+    except (firebase_auth.InvalidIdTokenError, ValueError):
+        # Forged or garbage tokens: a strike, like a wrong API key.
+        _flag_strike(request, "invalid sign-in token")
         raise HTTPException(status_code=401, detail="The Firebase sign-in token is invalid or expired.")
     except (DefaultCredentialsError, GoogleAuthError, FirebaseError) as error:
         raise HTTPException(status_code=503, detail="Firebase token verification is unavailable.") from error
@@ -90,6 +102,36 @@ def require_user(authorization: Annotated[str | None, Header()] = None) -> AuthU
         # Custom claim set only by SmartWatts operators via the Admin SDK.
         platform_admin=claims.get("platformAdmin") is True,
     )
+
+
+def cron_key_valid(request: Request, x_api_key: str | None) -> bool:
+    """True when the x-api-key header matches CRON_API_KEY_SHA256 (only the SHA-256 hash is configured).
+
+    A wrong key is a strike. The key is accepted only in a header, never in the URL (URLs end up in logs)."""
+    expected = os.getenv("CRON_API_KEY_SHA256", "").strip().lower()
+    if not x_api_key:
+        return False
+    supplied = hashlib.sha256(x_api_key.encode()).hexdigest()
+    if expected and hmac.compare_digest(supplied.encode(), expected.encode()):
+        return True
+    _flag_strike(request, "bad api key")
+    return False
+
+
+def require_operator(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Header()] = None,
+) -> AuthUser | None:
+    """Scheduler / outbox jobs: a valid cron key (x-api-key) or a signed-in platform administrator."""
+    if x_api_key is not None:
+        if cron_key_valid(request, x_api_key):
+            return None
+        raise HTTPException(status_code=401, detail="Invalid API key.")
+    user = require_user(request, authorization)
+    if not user.platform_admin:
+        raise HTTPException(status_code=403, detail="Platform administrators only.")
+    return user
 
 
 def require_permanent_user(user: Annotated[AuthUser, Depends(require_user)]) -> AuthUser:

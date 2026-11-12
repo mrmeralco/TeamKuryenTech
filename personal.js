@@ -773,7 +773,7 @@ async function loadPlans(_ctx, root) {
   fill(root, "plan-cards", `
     <div class="grid plan-grid">
       <section class="panel plan-card">
-        <p class="eyebrow">Tier 1</p><h3>${personal.name}</h3>
+        <p class="eyebrow">Tier 1</p><h3>${escapeHtml(personal.name)}</h3>
         <div class="bill-amount">Free <small>forever</small></div>
         <ul class="plan-list">
           <li>Bill upload with in-browser OCR</li><li>Appliance registration and usage estimates</li>
@@ -783,7 +783,7 @@ async function loadPlans(_ctx, root) {
         <button class="btn btn-outline" data-page="dashboard">Open my dashboard</button>
       </section>
       <section class="panel plan-card plan-featured">
-        <p class="eyebrow">Tier 2</p><h3>${rentals.name}</h3>
+        <p class="eyebrow">Tier 2</p><h3>${escapeHtml(rentals.name)}</h3>
         <div class="bill-amount">${formatPeso(rentals.priceCentavos)} <small>per property / month</small></div>
         <p class="stat-foot">Up to ${rentals.unitLimit} rental units per property. Proposed pricing.</p>
         <ul class="plan-list">
