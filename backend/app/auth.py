@@ -7,6 +7,7 @@ are tied to a recoverable identity.
 """
 
 import os
+import threading
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -33,6 +34,9 @@ class AuthUser:
         return self.sign_in_provider == "anonymous"
 
 
+_app_lock = threading.Lock()
+
+
 def get_firebase_app():
     project_id = os.getenv("FIREBASE_PROJECT_ID", "").strip()
     if not project_id:
@@ -40,6 +44,13 @@ def get_firebase_app():
     try:
         return firebase_admin.get_app()
     except ValueError:
+        pass
+    # Sync routes run in a thread pool: concurrent first requests must not both initialize the app.
+    with _app_lock:
+        try:
+            return firebase_admin.get_app()
+        except ValueError:
+            pass
         # ID-token verification uses Google's public keys; without configured
         # service credentials, use anonymous credentials rather than requiring
         # write-capable Admin SDK credentials for this API's auth dependency.

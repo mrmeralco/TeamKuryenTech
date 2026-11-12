@@ -104,3 +104,43 @@ body.theme-dark .coin-checkin-head p { color: var(--ink2); }
   .coin-day span { font-size: 10px; }
   .coin-day small { font-size: 9px; }
 }
+
+/* Daily quests (Energy Tip + Cost Forecast) gate the daily check-in */
+.game-card.coin-checkin-card { grid-template-columns: minmax(0, 1fr); }
+.daily-quests { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.quest-card { display: grid; gap: 8px; align-content: start; padding: 14px; border: 1px solid var(--line); border-radius: 13px; background: #fffaf2; }
+.quest-card.done { border-color: #b9d3a3; background: #f5faef; }
+.quest-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.quest-head b { flex: 1; min-width: 0; }
+.quest-badge { font-size: 10px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; color: var(--coin-orange); }
+.quest-reward { font-size: 13px; font-weight: 850; color: var(--coin-orange); }
+.quest-card.done .quest-reward { color: #3f7a1f; }
+.quest-card p { margin: 0; }
+.quest-tip-text { padding: 10px 12px; border-left: 3px solid var(--coin-gold); border-radius: 8px; background: #fff; line-height: 1.5; }
+.quest-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.quest-forecast-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; align-items: end; }
+.quest-forecast-form label { display: grid; gap: 4px; font-size: 12px; font-weight: 750; color: var(--muted); }
+.quest-forecast-form input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; font: inherit; color: inherit; background: #fff; }
+.quest-forecast-form button { grid-column: 1 / -1; }
+.quest-result { font-size: 13px; font-weight: 750; }
+.quest-result:empty { display: none; }
+.quest-gate { margin: 0; color: var(--muted); font-weight: 700; }
+body.theme-dark .quest-card { background: #24211c; border-color: #514837; }
+body.theme-dark .quest-card.done { background: #2a3026; border-color: #536044; }
+body.theme-dark .quest-tip-text, body.theme-dark .quest-forecast-form input { background: #1c1a16; color: var(--ink); border-color: #514837; }
+
+/* FAQ accordion */
+.faq-list { display: grid; gap: 8px; }
+.faq-category { border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; }
+.faq-category > summary { padding: 12px 0; font-weight: 850; cursor: pointer; }
+.faq-category > summary small { margin-left: 6px; color: var(--muted); font-weight: 700; }
+.faq-item { border-top: 1px solid var(--line); }
+.faq-item > summary { padding: 10px 0; font-weight: 750; cursor: pointer; }
+.faq-item > p { margin: 0 0 12px; }
+.faq-ref-title { margin: 16px 0 6px; }
+.faq-refs { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.faq-refs a { overflow-wrap: anywhere; }
+
+@media (max-width: 650px) {
+  .daily-quests, .quest-forecast-form { grid-template-columns: 1fr; }
+}

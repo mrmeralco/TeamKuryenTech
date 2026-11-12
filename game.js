@@ -1,10 +1,31 @@
-// Watts Coins rewards: task-gated check-ins and bill-verified monthly reductions only.
+// Watts Coins rewards: quest-gated daily check-ins, two small daily quests, and
+// bill-verified monthly kWh reductions.
 const CHART_COLORS = ["#ff7a00", "#ffc700", "#e6a000", "#a55300"];
 const DEFAULT_MONTHLY_TARGET = 320;
 const MONTHLY_USAGE = 342.18;
 const ENERGY_TARGET_KEY = "smartwatts-monthly-target";
 const COIN_STORAGE_PREFIX = "smartwatts-coins";
 const CHECK_IN_REWARDS_CENTS = [50, 50, 50, 50, 75, 75, 150];
+const QUEST_REWARD_CENTS = 5;
+const TIP_READ_SECONDS = 15;
+const QUESTS = {
+  tip: { source: "Energy Tip of the Day Quest", label: "Energy Tip of the Day" },
+  forecast: { source: "Daily Cost Forecast Quest", label: "Daily Cost Forecast Check" },
+};
+const ENERGY_TIPS = [
+  "Set your air conditioner to 25°C. Each degree cooler can add several percent to its energy use.",
+  "Clean your aircon filter every two weeks. A clogged filter makes the compressor work longer.",
+  "Unplug chargers, TVs, and set-top boxes you are not using. Standby power adds up every day.",
+  "Keep your refrigerator door closed and let hot food cool before storing it.",
+  "Leave a few centimetres of space behind the refrigerator so its coils can release heat.",
+  "Use an electric fan instead of the aircon on milder nights. Fans use a fraction of the power.",
+  "Switch to LED bulbs. They use far less electricity than incandescent bulbs for the same light.",
+  "Iron clothes in one batch instead of a few pieces every day to avoid repeated heat-up.",
+  "Run the washing machine with full loads and use the shortest suitable cycle.",
+  "Turn off the rice cooker's keep-warm mode when the rice will not be eaten soon.",
+  "Close curtains during the hottest hours so your room stays cooler with less cooling.",
+  "Check the yellow Energy Label before buying an appliance and compare its kWh per year.",
+];
 
 const reducedMotion = () => window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -25,6 +46,10 @@ function setGameCallbacks(callbacks) {
 let energyTargetCache = DEFAULT_MONTHLY_TARGET;
 let currentGameUser = "guest";
 const coinMemory = new Map();
+// Energy tip reading session (in memory: a page reload restarts the 15-second read).
+let tipReading = null; // { date, user, startedAt }
+let tipTimer = null;
+let activeRateCentavos = null;
 
 function getManilaDateString(date = new Date()) {
   try {
@@ -53,7 +78,7 @@ function addCalendarMonths(date, months = 3) {
 }
 
 function newCoinState() {
-  return { batches: [], ledger: [], lastCheckIn: null, streak: 0, claimedCycles: [] };
+  return { batches: [], ledger: [], lastCheckIn: null, streak: 0, claimedCycles: [], quests: { date: null, done: [] } };
 }
 
 function saveCoinState(state) {
@@ -70,6 +95,11 @@ function getCoinState({ reconcile = true } = {}) {
   state.lastCheckIn = typeof state.lastCheckIn === "string" ? state.lastCheckIn : null;
   state.streak = Number.isInteger(state.streak) && state.streak > 0 ? state.streak : 0;
   state.claimedCycles = Array.isArray(state.claimedCycles) ? state.claimedCycles : [];
+  const quests = state.quests && typeof state.quests === "object" ? state.quests : {};
+  state.quests = {
+    date: typeof quests.date === "string" ? quests.date : null,
+    done: Array.isArray(quests.done) ? quests.done.filter((id) => id in QUESTS) : [],
+  };
   if (reconcile) {
     const now = new Date();
     let changed = false;
@@ -141,13 +171,153 @@ function coinSummaryHtml() {
     <div class="coin-lock">🔒 Locked · Pending for Next Bill <span>Coins become usable only during your monthly bill payment or subscription renewal window.</span></div></div>`;
 }
 
-function checkIn(source) {
-  const habit = document.querySelector("#dailyHabitCheck");
-  if (!habit?.checked) {
-    gameUiCallbacks.toast("Complete today's energy-saving habit check before claiming your coins.");
+// Daily quests
+function completedQuestsToday(state = getCoinState()) {
+  return state.quests.date === getManilaDateString() ? [...state.quests.done] : [];
+}
+
+function completeQuest(questId) {
+  const quest = QUESTS[questId];
+  if (!quest) return false;
+  const state = getCoinState();
+  const today = getManilaDateString();
+  if (state.quests.date !== today) state.quests = { date: today, done: [] };
+  if (state.quests.done.includes(questId)) return false;
+  state.quests.done.push(questId);
+  saveCoinState(state);
+  addCoinBatch(QUEST_REWARD_CENTS, quest.source, new Date(), { questId, questDate: today });
+  return true;
+}
+
+function todaysEnergyTip(date = getManilaDateString()) {
+  const [y, m, d] = date.split("-").map(Number);
+  const dayNumber = Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+  return ENERGY_TIPS[((dayNumber % ENERGY_TIPS.length) + ENERGY_TIPS.length) % ENERGY_TIPS.length];
+}
+
+function tipSecondsLeft() {
+  if (!tipReading || tipReading.date !== getManilaDateString() || tipReading.user !== currentGameUser) return null;
+  return Math.max(0, TIP_READ_SECONDS - Math.floor((Date.now() - tipReading.startedAt) / 1000));
+}
+
+function startTipReading() {
+  if (completedQuestsToday().includes("tip")) return false;
+  if (tipSecondsLeft() === null) tipReading = { date: getManilaDateString(), user: currentGameUser, startedAt: Date.now() };
+  hydrateDailyQuests();
+  return true;
+}
+
+function claimTipQuest() {
+  const left = tipSecondsLeft();
+  if (left === null || left > 0) {
+    gameUiCallbacks.toast(`Read the tip for ${TIP_READ_SECONDS} seconds before claiming.`);
     return false;
   }
+  if (!completeQuest("tip")) {
+    gameUiCallbacks.toast("You already finished today's Energy Tip quest.");
+    return false;
+  }
+  tipReading = null;
+  gameUiCallbacks.toast(`Energy Tip quest complete! +${formatCoins(QUEST_REWARD_CENTS)} Watts Coins.`);
+  gameUiCallbacks.render();
+  return true;
+}
+
+function forecastDailyCost(watts, hours, rateCentavos) {
+  const w = Number(watts), h = Number(hours), r = Number(rateCentavos);
+  if (!Number.isFinite(w) || w <= 0 || w > 50000) throw new RangeError("Enter the appliance wattage (1 to 50,000 W).");
+  if (!Number.isFinite(h) || h <= 0 || h > 24) throw new RangeError("Enter today's hours of use (up to 24).");
+  if (!Number.isFinite(r) || r <= 0 || r > 10000) throw new RangeError("Enter your rate per kWh, e.g. 12.25.");
+  const kwh = (w * h) / 1000;
+  return { kwh, costCentavos: Math.round(kwh * r) };
+}
+
+function submitCostForecast(form) {
+  const data = new FormData(form);
+  let result;
+  try {
+    result = forecastDailyCost(data.get("watts"), data.get("hours"), Math.round(Number(data.get("rate")) * 100));
+  } catch (error) {
+    gameUiCallbacks.toast(error.message);
+    return false;
+  }
+  const cost = (result.costCentavos / 100).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const message = `Forecast: ${result.kwh.toFixed(2)} kWh today ≈ ₱${cost}`;
+  const awarded = completeQuest("forecast");
+  gameUiCallbacks.toast(awarded ? `${message}. Cost Forecast quest complete! +${formatCoins(QUEST_REWARD_CENTS)} Watts Coins.` : `${message}.`);
+  if (awarded) gameUiCallbacks.render();
+  const output = document.querySelector("#forecastResult");
+  if (output) output.textContent = `${message} (estimate only; your bill includes other charges).`;
+  return true;
+}
+
+function setActiveRate(rateCentavos) {
+  activeRateCentavos = Number.isFinite(rateCentavos) && rateCentavos > 0 ? Math.round(rateCentavos) : null;
+  const input = document.querySelector("#forecastRate");
+  if (input && !input.value && activeRateCentavos) input.value = (activeRateCentavos / 100).toFixed(2);
+}
+
+// Keeps the tip countdown and the claim button in sync after each render.
+function hydrateDailyQuests() {
+  if (tipTimer) { clearInterval(tipTimer); tipTimer = null; }
+  const card = document.querySelector(".quest-tip");
+  if (!card) return;
+  const update = () => {
+    const left = tipSecondsLeft();
+    const body = card.querySelector(".quest-tip-body");
+    const claim = card.querySelector('[data-action="quest-tip-claim"]');
+    const open = card.querySelector('[data-action="quest-tip-open"]');
+    if (left === null || !body || !claim) return false;
+    body.hidden = false;
+    if (open) open.hidden = true;
+    claim.hidden = false;
+    claim.disabled = left > 0;
+    claim.textContent = left > 0 ? `Keep reading… ${left}s` : `Claim +${formatCoins(QUEST_REWARD_CENTS)} coins`;
+    return left > 0;
+  };
+  if (update()) {
+    tipTimer = setInterval(() => {
+      if (!document.body.contains(card) || !update()) { clearInterval(tipTimer); tipTimer = null; }
+    }, 250);
+  }
+}
+
+function dailyQuestsHtml(state) {
+  const done = completedQuestsToday(state);
+  const tipDone = done.includes("tip");
+  const forecastDone = done.includes("forecast");
+  const reward = `+${formatCoins(QUEST_REWARD_CENTS)}`;
+  const rateValue = activeRateCentavos ? (activeRateCentavos / 100).toFixed(2) : "";
+  return `
+      <div class="daily-quests" aria-label="Daily quests">
+        <article class="quest-card quest-tip ${tipDone ? "done" : ""}">
+          <div class="quest-head"><span class="quest-badge">Read &amp; Learn</span><b>${QUESTS.tip.label}</b><span class="quest-reward">${tipDone ? "✓ Done" : reward}</span></div>
+          ${tipDone
+            ? `<p class="quest-tip-text">${todaysEnergyTip()}</p>`
+            : `<p class="stat-foot">Read today's ${TIP_READ_SECONDS}-second energy-saving tip.</p>
+               <div class="quest-tip-body" hidden><p class="quest-tip-text">${todaysEnergyTip()}</p></div>
+               <div class="quest-actions"><button class="btn btn-outline" data-action="quest-tip-open">Read today's tip</button><button class="btn btn-primary" data-action="quest-tip-claim" hidden disabled>Keep reading… ${TIP_READ_SECONDS}s</button></div>`}
+        </article>
+        <article class="quest-card quest-forecast ${forecastDone ? "done" : ""}">
+          <div class="quest-head"><span class="quest-badge">Planning</span><b>${QUESTS.forecast.label}</b><span class="quest-reward">${forecastDone ? "✓ Done" : reward}</span></div>
+          <p class="stat-foot">Use the appliance calculator to forecast today's cost with your active rate.</p>
+          <form id="costForecastForm" class="quest-forecast-form">
+            <label>Wattage (W)<input name="watts" type="number" min="1" max="50000" step="any" inputmode="decimal" required placeholder="1000"></label>
+            <label>Hours today<input name="hours" type="number" min="0.1" max="24" step="any" inputmode="decimal" required placeholder="8"></label>
+            <label>Rate (₱/kWh)<input id="forecastRate" name="rate" type="number" min="0.01" step="0.01" inputmode="decimal" required value="${rateValue}" placeholder="12.25"></label>
+            <button class="btn btn-outline" type="submit">Forecast cost</button>
+          </form>
+          <p id="forecastResult" class="quest-result" aria-live="polite"></p>
+        </article>
+      </div>`;
+}
+
+function checkIn(source) {
   const state = getCoinState();
+  if (!completedQuestsToday(state).length) {
+    gameUiCallbacks.toast("Finish at least one daily quest (Energy Tip or Cost Forecast) to unlock today's check-in.");
+    return false;
+  }
   const today = getManilaDateString();
   if (state.lastCheckIn === today) {
     gameUiCallbacks.toast("You already checked in today. Come back tomorrow!");
@@ -224,6 +394,7 @@ function saveMonthlyEnergyTarget(target) {
 function gamificationCard() {
   const state = getCoinState();
   const checkedToday = state.lastCheckIn === getManilaDateString();
+  const unlocked = completedQuestsToday(state).length > 0;
   const completedInCycle = checkedToday ? ((state.streak - 1) % 7) + 1 : state.streak % 7;
   const upcomingDay = checkedToday ? (completedInCycle === 7 ? 1 : completedInCycle + 1) : (completedInCycle === 0 ? 1 : completedInCycle + 1);
   const labels = ["Today", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"];
@@ -237,7 +408,8 @@ function gamificationCard() {
     <section class="game-card coin-checkin-card" aria-label="Daily Watts Coins check-in">
       <div class="coin-checkin-head"><div><small>7-DAY DAILY CHECK-IN STREAK</small><h2>Small habits, real rewards.</h2><p>Earn 5.00 Watts Coins (₱5.00) for a complete seven-day cycle.</p></div><button class="btn btn-outline" data-page="rewards">View Watts Coins</button></div>
       <div class="coin-streak-tracker">${tracker}</div>
-      <div class="coin-checkin-footer"><label><input id="dailyHabitCheck" type="checkbox" ${checkedToday ? "disabled" : ""}> I completed one energy-saving habit today.</label><button class="btn btn-primary" data-action="checkin" disabled>${checkedToday ? "Checked in today" : "Check in to get coins"}</button></div>
+      ${dailyQuestsHtml(state)}
+      <div class="coin-checkin-footer"><p class="quest-gate">${checkedToday ? "Come back tomorrow to keep your streak." : unlocked ? "🔓 Check-in unlocked. Claim today's coins." : "🔒 Complete at least one daily quest above to unlock today's check-in."}</p><button class="btn btn-primary" data-action="checkin" ${checkedToday || !unlocked ? "disabled" : ""}>${checkedToday ? "Checked in today" : "Check in to get coins"}</button></div>
     </section>`;
 }
 
@@ -294,7 +466,7 @@ function goalsPage() {
            </div>
          </div>`,
       )}
-      ${gameUiCallbacks.panel("Earn Watts Coins", `<p>Only two earning sources are available: daily check-ins and a verified decrease in monthly kWh.</p><button class="btn btn-outline" data-page="rewards">View earning options</button>`)}
+      ${gameUiCallbacks.panel("Earn Watts Coins", `<p>Earn coins from the 7-day check-in streak, two daily quests (+0.05 each), and a verified decrease in monthly kWh.</p><button class="btn btn-outline" data-page="rewards">View earning options</button>`)}
     </div>
     ${gameUiCallbacks.panel(
       "Adjust your monthly target",
@@ -322,11 +494,12 @@ function rewardsPage() {
     const batch = item.kind === "earning" ? state.batches.find((b) => b.id === item.batchId) : null;
     const detail = item.source === "Daily Check-In" && batch ? `Daily Check-In (expires ${new Date(batch.expiresAt).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })})` : item.source;
     return `<div class="coin-ledger-row ${expired ? "expired" : ""}"><span class="coin-ledger-icon">◉</span><div><b>${detail}</b><small>${date}</small></div><strong class="${positive ? "positive" : "negative"}">${value}</strong></div>`;
-  }).join("") : `<p class="empty-note">No coin transactions yet. Complete a daily check-in or save a lower monthly bill.</p>`;
+  }).join("") : `<p class="empty-note">No coin transactions yet. Complete a daily quest, check in, or save a lower monthly bill.</p>`;
   return `
-    ${gameUiCallbacks.pageHead("Watts Coins", "Earn coins through daily check-ins and verified monthly energy savings.", `<button class="btn btn-outline" data-page="bills">Earn More Coins</button>`)}
+    ${gameUiCallbacks.pageHead("Watts Coins", "Earn coins through daily quests, check-ins, and verified monthly energy savings.", `<button class="btn btn-outline" data-page="bills">Earn More Coins</button>`)}
     ${coinSummaryHtml()}
-    ${gameUiCallbacks.panel("Monthly kWh Reduction Bonus", `<p>Save at least 1 kWh against your previous saved bill to earn ₱0.20 per kWh reduced, up to 15.00 Watts Coins per billing cycle. Review and save your monthly bill to compare usage.</p><button class="btn btn-outline" data-page="bills">Upload / review monthly bill</button>`)}
+    ${gamificationCard()}
+    ${gameUiCallbacks.panel("Monthly Consumption Reduction Mission", `<p>At the end of the month, upload your Meralco bill (Personal) or your condo/apartment utility SOA or sub-meter slip (Rentals). If your kWh went down versus the previous month, you earn 0.20 Watts Coins (₱0.20) per kWh reduced, up to 15.00 Watts Coins per billing cycle.</p><button class="btn btn-outline" data-page="bills">Upload / review monthly bill</button>`)}
     ${gameUiCallbacks.panel("My Watts Coins", `<div class="coin-tabs" role="tablist"><button data-coin-tab="all" class="${historyTab === "all" ? "active" : ""}">ALL HISTORY</button><button data-coin-tab="earning" class="${historyTab === "earning" ? "active" : ""}">EARNING</button><button data-coin-tab="spending" class="${historyTab === "spending" ? "active" : ""}">SPENDING</button></div><div class="coin-ledger" id="coin-ledger">${history}</div>`, `<span class="reward-pill">${formatCoins(coinBalanceCents(state))} available · locked</span>`)}
     <p class="about-note">Coin balance and expiry are stored in this browser for this account. Real bill payment, subscription renewal, and external utility verification are not connected in this demo.</p>`;
 }
@@ -377,7 +550,16 @@ export {
   awardMonthlyReduction,
   CHART_COLORS,
   checkIn,
+  claimTipQuest,
+  completedQuestsToday,
+  completeQuest,
+  forecastDailyCost,
   gamificationCard,
+  hydrateDailyQuests,
+  setActiveRate,
+  startTipReading,
+  submitCostForecast,
+  todaysEnergyTip,
   getMonthlyEnergyTarget,
   getCoinState,
   coinBalanceCents,

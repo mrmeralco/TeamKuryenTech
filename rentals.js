@@ -2,11 +2,11 @@
 // All data comes from the FastAPI backend, which enforces membership, role,
 // and subscription checks. Nothing here can reach tenants' private data.
 import QRCode from "qrcode";
-import { apiGet, apiPost, apiPutFile } from "./src/lib/apiAuth.ts";
+import { apiGet, apiPatch, apiPost, apiPutFile } from "./src/lib/apiAuth.ts";
 import { parsePesoToCentavos } from "./src/lib/format.ts";
 import { extractBillFields, extractMeterReading, recognizeImage } from "./src/lib/ocr.ts";
 import {
-  errorMessage, field, fill, formatPeso, formValues, kindBadge, notice, slot, table, todayIso, user, whToKwh, LEGAL_NOTICE,
+  confirmDialog, errorMessage, field, fill, formatPeso, formValues, kindBadge, lifecycleBadge, LIFECYCLE_LABELS, notice, slot, table, todayIso, user, whToKwh, LEGAL_NOTICE,
 } from "./ui-kit.js";
 import { getWorkspace, loadWorkspaces, setWorkspace } from "./workspace.js";
 import { calendarSection } from "./calendar-view.js";
@@ -16,7 +16,9 @@ const METER_KINDS = {
   private_submeter: "Private submeter (Scenario B)",
   utility_shared: "Shared utility meter (Scenario C)",
 };
-const STATUS_LABELS = { draft: "Draft", finalized: "Finalized", superseded: "Superseded", void: "Void" };
+const STATUS_LABELS = { draft: "Draft", reviewed: "Reviewed", finalized: "Published", superseded: "Superseded", void: "Void" };
+const statementStage = (s) => (s.status === "draft" && s.reviewedAt ? "reviewed" : s.status);
+const OCCUPANCY_LABELS = { vacant: "Vacant", occupied: "Occupied (tenant not on SmartWatts)", maintenance: "Under maintenance" };
 
 const pid = () => encodeURIComponent(getWorkspace().propertyId ?? "");
 const base = () => `/api/rentals/properties/${pid()}`;
@@ -25,9 +27,42 @@ const legal = () => notice("warning", LEGAL_NOTICE);
 function entitlementBanner(property) {
   const e = property.entitlement;
   if (!e || e.active) return "";
-  const label = e.status === "expired" ? "has expired" : "is not active";
-  return notice("danger", `This property's SmartWatts Rentals subscription ${label}. Existing records stay readable, but changes are paused.
-    <button class="text-link" data-page="rental-subscription">View subscription</button>`);
+  const link = `<button class="text-link" data-page="rental-subscription">View subscription</button>`;
+  if (e.lifecycle === "archived") return notice("warning", "This property is archived. All records stay readable; nothing can be changed.");
+  if (e.lifecycle === "draft" || e.lifecycle === "pending_activation") {
+    return notice("info", `${lifecycleBadge(e.lifecycle)} Analytics requires an active property subscription. You can set up units, meters, and billing arrangements now. Existing historical records are preserved. ${e.lifecycle === "pending_activation" ? "Your activation request is waiting for SmartWatts staff review. Check Subscription for the decision and any reason provided; contact staff if you need an update." : "Request activation from Subscription when setup is ready."} Tenant invitations and new readings, bills, and statements unlock after activation. Bills saved in your Personal workspace remain separate from this property's Rentals records. ${link}`);
+  }
+  return notice("danger", `This property's SmartWatts Rentals subscription ${e.status === "expired" ? "has expired" : "is not active"}. Existing records stay readable, but changes are paused. ${link}`);
+}
+
+/** Disables a paid operational form with a visible explanation instead of failing on submit. */
+function operational(property, html) {
+  const e = property.entitlement;
+  if (e?.active) return html;
+  const why = e?.lifecycle === "archived" ? "This property is archived." : "Available after this property's subscription is activated.";
+  return `<p class="muted-note locked-note">🔒 ${why}</p><fieldset class="locked-fieldset" disabled>${html}</fieldset>`;
+}
+
+/** Setup forms work on drafts but not on suspended, expired, disabled, or archived properties. */
+function setupForm(property, html) {
+  const lifecycle = property.entitlement?.lifecycle;
+  if (["draft", "pending_activation", "active"].includes(lifecycle)) return html;
+  return `<p class="muted-note locked-note">🔒 ${lifecycle === "archived" ? "This property is archived." : "Changes are paused until the subscription is renewed."}</p><fieldset class="locked-fieldset" disabled>${html}</fieldset>`;
+}
+
+async function notificationsPanel(ctx, propertyId) {
+  let items = [];
+  try {
+    items = (await apiGet("/api/rentals/notifications")).filter((n) => n.propertyId === propertyId).slice(0, 8);
+  } catch {
+    return "";
+  }
+  return ctx.panel("Property notifications", items.length ? `<div class="rental-notifications">${items.map((n) => `
+    <div class="alert ${n.readAt ? "read" : "unread"}"><div><strong>${ctx.escape(n.title)}</strong>
+      <small class="notification-time">${ctx.escape(new Date(n.createdAt).toLocaleString())}</small><p>${user(n.body)}</p>
+      <div class="toolbar">${n.page ? `<button class="text-link" data-page="${ctx.escape(n.page)}">Open</button>` : ""}
+      ${n.readAt ? "" : `<button class="text-link" data-act="rental-notification-read" data-id="${encodeURIComponent(n.id)}">Mark read</button>`}</div></div></div>`).join("")}</div>`
+    : `<p class="muted-note">No property notifications yet.</p>`);
 }
 
 async function propertyHeader(root) {
@@ -53,6 +88,14 @@ function statementLines(statement) {
   );
 }
 
+function statementMeta(statement) {
+  const config = statement.meterConfiguration ? METER_KINDS[statement.meterConfiguration] ?? statement.meterConfiguration : null;
+  return `<div class="detail-list statement-meta">
+    ${config ? `<div class="detail-row"><span>Meter configuration</span><b>${user(statement.meterLabel ?? "")} · ${config}</b></div>` : ""}
+    <div class="detail-row"><span>Statement version</span><b>v${user(statement.version)} · ${STATUS_LABELS[statementStage(statement)] ?? user(statement.status)}</b></div>
+  </div>`;
+}
+
 function calculationDetails(statement) {
   return `<details class="calc-details"><summary>How this was calculated</summary>
     ${statement.lines.map((line) => `<pre translate="no">${user(JSON.stringify(line.calculation, null, 2))}</pre>`).join("")}
@@ -61,79 +104,85 @@ function calculationDetails(statement) {
 
 // ------------------------------------------------------------ overview
 function overviewPage(ctx) {
-  return `${ctx.pageHead("Property overview", "Units, meters, bills, and statements at a glance.")}
-    ${slot("entitlement", "")}${legal()}${slot("overview")}`;
+  return `${ctx.pageHead("Property overview", "Setup progress, operations, and recent activity for this property.")}
+    ${slot("entitlement", "")}${slot("overview")}<div style="margin-top:14px">${slot("overview-notifications", "")}</div>`;
+}
+
+function setupChecklist(ctx, property) {
+  const setup = property.setup;
+  const e = property.entitlement;
+  const steps = [
+    ["Property details", true, "rental-overview", `${user(property.name)} · ${user(property.address)}`],
+    ["Units", setup.unitCount > 0, "rental-units", `${setup.unitCount} of ${e.unitLimit} units`],
+    ["Meters", setup.meterCount > 0, "rental-meters", `${setup.meterCount} meter(s) registered`],
+    ["Billing arrangement for every unit", setup.unitCount > 0 && !setup.unitsWithoutBillingArrangement.length, "rental-meters",
+      setup.unitsWithoutBillingArrangement.length ? `Missing: ${setup.unitsWithoutBillingArrangement.map((label) => user(label)).join(", ")}` : "Each unit has a meter or an allocation agreement"],
+    ["Subscription / activation", e.active, "rental-subscription", e.active ? "Active" : LIFECYCLE_LABELS[e.lifecycle]?.[0] ?? "Draft"],
+    ["Tenants & invitations", setup.memberCount > 1, "rental-units", e.active ? `${setup.memberCount - 1} member(s) besides you` : "Unlocks after activation"],
+  ];
+  const done = steps.filter(([, complete]) => complete).length;
+  return ctx.panel(`Property setup <small>${done} of ${steps.length} complete</small>`, `
+    <div class="setup-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${steps.length}" aria-valuenow="${done}" aria-label="Setup progress"><span style="width:${Math.round((done / steps.length) * 100)}%"></span></div>
+    <ol class="setup-steps">${steps.map(([label, complete, page, detail]) => `
+      <li class="${complete ? "done" : ""}"><span class="setup-check" aria-hidden="true">${complete ? "✓" : ""}</span>
+        <div><b>${label}</b><small>${detail}</small></div>
+        <button class="btn btn-outline btn-small" data-page="${page}">${complete ? "Review" : "Set up"}</button></li>`).join("")}</ol>`);
 }
 
 async function loadOverview(ctx, root) {
   const property = await propertyHeader(root);
   const e = property.entitlement;
-  let analytics = null;
-  if (e?.active) {
-    try {
-      analytics = await apiGet(`${base()}/analytics`);
-    } catch {
-      // Inactive or error
-    }
+  const header = `<div class="property-title"><h3 translate="no">${ctx.escape(property.name)}</h3>${lifecycleBadge(e.lifecycle)}
+    <p class="muted-note">${user(property.address)} · You are the ${property.role === "owner" ? "owner" : "administrator"}</p></div>`;
+  fill(root, "overview-notifications", await notificationsPanel(ctx, getWorkspace().propertyId));
+
+  if (!e.active) {
+    fill(root, "overview", `${header}
+      <div class="two-panels">
+        ${setupChecklist(ctx, property)}
+        ${ctx.panel("Activate SmartWatts Rentals", `
+          <p class="stat-foot">${formatPeso(e.priceCentavos)} per property per month (proposed) · up to ${user(e.unitLimit)} units · tenants join free.</p>
+          <p class="muted-note">Activation unlocks tenant invitations, meter readings, bill records, statements, and Property Analytics. Online payment is not enabled; SmartWatts staff activate subscriptions manually.</p>
+          ${e.lifecycle === "pending_activation" ? notice("info", "Activation requested. SmartWatts staff will contact you. No payment was taken.") : ""}
+          <button class="btn btn-primary" data-page="rental-subscription">${e.lifecycle === "pending_activation" ? "View activation request" : "Request activation"}</button>`)}
+      </div>`);
+    return;
   }
 
-  if (analytics) {
-    fill(root, "overview", `
-      <div class="grid stats">
-        ${ctx.stat("layout-dashboard", "Units", analytics.unitCount, "", `${analytics.occupiedUnitCount} occupied`, "")}
-        ${ctx.stat("gauge", "Meters", analytics.meterCount, "", "Registered", "")}
-        ${ctx.stat("receipt", "Utility bills", analytics.bills.length, "", "Recent official bills", "")}
-        ${ctx.stat("badge-dollar-sign", "Subscription", e.active ? "Active" : e.status, "", `${formatPeso(e.priceCentavos)} / month · up to ${e.unitLimit} units`, "")}
-      </div>
-      <div class="two-panels">
-        ${ctx.panel(`Property <small translate="no">${ctx.escape(property.name)}</small>`, `<div class="detail-list">
-          <div class="detail-row"><span>Address</span><b>${user(property.address)}</b></div>
-          <div class="detail-row"><span>Your role</span><b>${property.role === "owner" ? "Owner" : "Administrator"}</b></div>
-        </div>`)}
-        ${ctx.panel("Recent official bills", table(
-          ["Period", "kWh", "Amount"],
-          analytics.bills.map((b) => [`${user(b.periodStart)} – ${user(b.periodEnd)}`, `${whToKwh(b.totalWh)} ${kindBadge("official_utility_bill")}`, formatPeso(b.amountCentavos)]),
-          "No bills recorded yet.",
-        ))}
-      </div>
-      <div style="margin-top:14px">${ctx.panel("Property billing calendar", calendarSection(ctx, `owner-${pid()}`, analytics.bills.map((b) => ({
-        periodStart: b.periodStart, periodEnd: b.periodEnd, kwh: b.totalWh / 1000, amountCentavos: b.amountCentavos, kind: "recorded",
-      }))))}</div>
-      <div style="margin-top:14px">${ctx.panel("Finalized statements by unit", table(
-        ["Unit", "Measured consumption", "Total billed"],
-        analytics.finalizedByUnit.map((u) => [user(u.unitLabel), `${whToKwh(u.measuredWh)} kWh`, formatPeso(u.billedCentavos)]),
-        "No finalized statements yet.",
-      ))}</div>`);
-  } else {
-    const [units, meters, bills] = await Promise.all([
-      apiGet(`${base()}/units`),
-      apiGet(`${base()}/meters`),
-      apiGet(`${base()}/utility-bills`),
-    ]);
-    fill(root, "overview", `
-      <div class="grid stats">
-        ${ctx.stat("layout-dashboard", "Units", units.length, "", "Registered units", "")}
-        ${ctx.stat("gauge", "Meters", meters.length, "", "Registered meters", "")}
-        ${ctx.stat("receipt", "Utility bills", bills.length, "", "Saved utility bills", "")}
-        ${ctx.stat("badge-dollar-sign", "Subscription", e?.status ?? "Inactive", "", `${formatPeso(e?.priceCentavos ?? 29900)} / month · up to ${e?.unitLimit ?? 10} units`, "")}
-      </div>
-      <div class="two-panels">
-        ${ctx.panel(`Property Setup <small translate="no">${ctx.escape(property.name)}</small>`, `<div class="detail-list">
-          <div class="detail-row"><span>Address</span><b>${user(property.address)}</b></div>
-          <div class="detail-row"><span>Your role</span><b>${property.role === "owner" ? "Owner" : "Administrator"}</b></div>
-          <div class="detail-row"><span>Subscription</span><b>${user(e?.status ?? "inactive")} (setup state)</b></div>
-        </div>
-        <div style="margin-top:12px;">
-          <p class="muted-note">This property is in free setup state. Your units, meters, and bills are preserved. Subscribe to unlock billing calculations, tenant statement publishing, and Property Analytics.</p>
-          <button class="primary" data-page="rental-subscription">View Subscription</button>
-        </div>`)}
-        ${ctx.panel("Saved official bills", table(
-          ["Period", "kWh", "Amount"],
-          bills.map((b) => [`${user(b.periodStart)} – ${user(b.periodEnd)}`, `${whToKwh(b.totalWh)} ${kindBadge("official_utility_bill")}`, formatPeso(b.amountCentavos)]),
-          "No bills recorded yet.",
-        ))}
-      </div>`);
+  let analytics = null;
+  try {
+    analytics = await apiGet(`${base()}/analytics`);
+  } catch (error) {
+    fill(root, "overview", `${header}${notice("danger", `Could not load property data: ${ctx.escape(errorMessage(error))}`)}`);
+    return;
   }
+  const latest = analytics.bills.at(-1);
+  const reviewRequests = await apiGet(`${base()}/review-requests`).catch(() => []);
+  const openRequests = reviewRequests.filter((r) => r.status === "open").length;
+  const unreviewed = analytics.statementsSummary.draftCount;
+  fill(root, "overview", `${header}
+    <div class="grid stats">
+      ${ctx.stat("layout-dashboard", "Active units", analytics.unitCount, `/ ${e.unitLimit}`, `${analytics.occupiedUnitCount} occupied · ${analytics.occupancyRate}%`, "")}
+      ${ctx.stat("gauge", "Meters", analytics.meterCount, "", `${analytics.missingReadingsAlerts.length} need a reading`, "")}
+      ${ctx.stat("receipt", "Latest billing period", latest ? `${whToKwh(latest.totalWh)}` : "—", latest ? "kWh" : "", latest ? `${latest.periodStart} – ${latest.periodEnd}` : "No bills recorded yet", "")}
+      ${ctx.stat("receipt-text", "Statements to review", unreviewed, "", `${analytics.statementsSummary.needsReviewCount} need fixes · ${openRequests} tenant request(s)`, "")}
+    </div>
+    <div class="two-panels">
+      ${ctx.panel("Needs attention", `<ul class="attention-list">
+        ${analytics.missingReadingsAlerts.map((a) => `<li><b>${user(a.meterLabel)}</b> — ${user(a.issue)} <button class="text-link" data-page="rental-readings">Record reading</button></li>`).join("")}
+        ${unreviewed ? `<li><b>${unreviewed} draft statement(s)</b> waiting for review. <button class="text-link" data-page="rental-statements">Review</button></li>` : ""}
+        ${openRequests ? `<li><b>${openRequests} tenant review request(s)</b> open. <button class="text-link" data-page="rental-statements">Respond</button></li>` : ""}
+        ${property.setup.unitsWithoutBillingArrangement.length ? `<li>Units without a meter or allocation: ${property.setup.unitsWithoutBillingArrangement.map((l) => user(l)).join(", ")} <button class="text-link" data-page="rental-meters">Configure</button></li>` : ""}
+      </ul>${analytics.missingReadingsAlerts.length || unreviewed || openRequests || property.setup.unitsWithoutBillingArrangement.length ? "" : `<p class="muted-note">Nothing needs attention right now.</p>`}`)}
+      ${ctx.panel("Recent utility bills", table(
+        ["Period", "kWh", "Amount"],
+        analytics.bills.slice(-6).reverse().map((b) => [`${user(b.periodStart)} – ${user(b.periodEnd)}`, `${whToKwh(b.totalWh)} ${kindBadge("owner_entered")}`, formatPeso(b.amountCentavos)]),
+        "No bills recorded yet. Add one on the Utility Bills page.",
+      ))}
+    </div>
+    <div style="margin-top:14px">${ctx.panel("Property billing calendar", calendarSection(ctx, `owner-${pid()}`, analytics.bills.map((b) => ({
+      periodStart: b.periodStart, periodEnd: b.periodEnd, kwh: b.totalWh / 1000, amountCentavos: b.amountCentavos, kind: "recorded",
+    }))))}</div>`);
 }
 
 // ------------------------------------------------------------ analytics
@@ -145,9 +194,33 @@ let currentAnalyticsState = {
   period: "all",
 };
 
+let currentAnalyticsFilter = { from: "", to: "" };
+let analyticsCtx = null;
+
+// One delegated listener (page loaders get a guarded root without addEventListener,
+// and #content outlives each render, so per-load listeners would pile up).
+document.addEventListener("change", (event) => {
+  const id = event.target?.id;
+  if (id !== "rentalAnalyticsPeriodSelect" && id !== "rentalAnalyticsUnitSelect") return;
+  const root = document.querySelector("#content");
+  if (!root || !analyticsCtx || !currentAnalyticsData) return;
+  if (id === "rentalAnalyticsPeriodSelect") currentAnalyticsState.period = event.target.value;
+  else currentAnalyticsState.unitId = event.target.value;
+  renderAnalyticsView(analyticsCtx, root);
+});
+
 function analyticsPage(ctx) {
-  return `${ctx.pageHead("Property Analytics", "Unit-level electricity usage, official billing totals, and tenant statements.")}
-    ${slot("entitlement", "")}${legal()}${slot("analytics-content")}`;
+  return `${ctx.pageHead("Property Analytics", "Unit-level electricity usage, official billing totals, and tenant statements.",
+    `<button class="btn btn-outline" data-act="analytics-print">Print / Save as PDF</button>`)}
+    ${slot("entitlement", "")}${legal()}
+    <form class="analytics-filter" data-form="analytics-filter" aria-label="Analytics date filter">
+      <label>From<input type="date" name="from" value="${ctx.escape(currentAnalyticsFilter.from)}"></label>
+      <label>To<input type="date" name="to" value="${ctx.escape(currentAnalyticsFilter.to)}"></label>
+      <button class="btn btn-outline btn-small" type="submit">Apply</button>
+      <button class="btn btn-outline btn-small" type="button" data-act="analytics-filter-clear">Clear</button>
+      <small class="muted-note">Billing periods overlapping these dates are included.</small>
+    </form>
+    ${slot("analytics-content")}`;
 }
 
 async function loadAnalytics(ctx, root) {
@@ -167,24 +240,16 @@ async function loadAnalytics(ctx, root) {
   }
 
   try {
+    const query = new URLSearchParams(Object.entries(currentAnalyticsFilter).filter(([, v]) => v)).toString();
     const [analytics, portfolio] = await Promise.all([
-      apiGet(`${base()}/analytics`),
+      apiGet(`${base()}/analytics${query ? `?${query}` : ""}`),
       apiGet("/api/rentals/portfolio/analytics").catch(() => null),
     ]);
     currentAnalyticsData = analytics;
     currentPortfolioData = portfolio;
     currentAnalyticsState = { viewMode: "property", unitId: "all", period: "all" };
+    analyticsCtx = ctx;
     renderAnalyticsView(ctx, root);
-
-    root.addEventListener("change", (event) => {
-      if (event.target.id === "rentalAnalyticsPeriodSelect") {
-        currentAnalyticsState.period = event.target.value;
-        renderAnalyticsView(ctx, root);
-      } else if (event.target.id === "rentalAnalyticsUnitSelect") {
-        currentAnalyticsState.unitId = event.target.value;
-        renderAnalyticsView(ctx, root);
-      }
-    });
   } catch (error) {
     fill(root, "analytics-content", notice("danger", `Could not load analytics: ${ctx.escape(errorMessage(error))}`));
   }
@@ -303,12 +368,26 @@ function renderAnalyticsView(ctx, root) {
       </div>`;
   }
 
+  const meterTrendHtml = a.meterTrends?.length ? ctx.panel("Meter-level comparison", `
+      <p class="muted-note">Billed kWh per utility meter for each recorded bill period. Shared meters show the building total only; SmartWatts never invents per-unit kWh for them.</p>
+      ${table(["Meter", "Type", ...[...new Set(a.meterTrends.flatMap((t) => t.points.map((p) => p.periodStart.slice(0, 7))))].sort().map((m) => user(m))],
+        (() => {
+          const months = [...new Set(a.meterTrends.flatMap((t) => t.points.map((p) => p.periodStart.slice(0, 7))))].sort();
+          return a.meterTrends.map((t) => [
+            user(t.meterLabel), METER_KINDS[t.kind] ?? user(t.kind),
+            ...months.map((month) => {
+              const point = t.points.find((p) => p.periodStart.startsWith(month));
+              return point ? `${user(point.kwh)} kWh<div class="muted-note">${formatPeso(point.amountCentavos)}</div>` : "—";
+            }),
+          ]);
+        })())}`) : "";
+
   const maxUnitWh = Math.max(...a.unitsAnalytics.map((u) => u.totalMeasuredWh + u.totalAllocatedWh), 1000);
   const unitBarsHtml = `
     <div class="panel" style="margin-bottom: 14px;">
       <div class="panel-head">
         <h3>Unit Consumption Comparison</h3>
-        <span class="kind-badge kind-measured">Verified Usage</span>
+        <span class="kind-badge kind-measured">Measured</span><span class="kind-badge kind-allocation">Allocated</span>
       </div>
       <p class="muted-note" style="margin-top: 4px;">Measured vs allocated electricity consumption per unit across billing periods.</p>
       <div style="display: grid; gap: 10px; margin-top: 14px;">
@@ -425,6 +504,7 @@ function renderAnalyticsView(ctx, root) {
     ${popHtml}
     ${missingReadingsHtml}
     ${sharedMeterHtml}
+    ${meterTrendHtml ? `<div style="margin-bottom:14px">${meterTrendHtml}</div>` : ""}
     <div class="two-panels">
       ${unitBarsHtml}
       ${statusBreakdownHtml}
@@ -454,11 +534,7 @@ function unitsPage(ctx) {
   return `${ctx.pageHead("Units & tenants", "Register units, invite tenants with a secure link or QR code, and record move-outs.")}
     ${slot("entitlement", "")}
     <div class="two-panels">
-      ${ctx.panel("Add a unit", `<form class="form-grid" data-form="unit-create">
-        ${field("Unit label", `<input name="label" required maxlength="60" placeholder="e.g. Unit 2B">`)}
-        ${field("Notes (optional)", `<input name="notes" maxlength="500">`)}
-        <div class="field full"><button class="btn btn-primary" type="submit">Add unit</button></div>
-      </form>`)}
+      ${ctx.panel("Add a unit", slot("unit-form"))}
       ${ctx.panel("Invite someone", slot("invite-form"))}
     </div>
     <div data-slot="invite-result"></div>
@@ -472,25 +548,46 @@ async function loadUnits(ctx, root) {
     propertyHeader(root), apiGet(`${base()}/units`), apiGet(`${base()}/invitations`), apiGet(`${base()}/members`),
   ]);
   const unitLabel = Object.fromEntries(units.map((u) => [u.id, u.label]));
-  fill(root, "invite-form", `<form class="form-grid" data-form="invite-create">
+  const activeUnits = units.filter((u) => u.status === "active");
+  const limit = property.entitlement.unitLimit;
+  const atCap = activeUnits.length >= limit;
+  fill(root, "unit-form", `<p class="muted-note">${activeUnits.length} of ${limit} units used on this property.</p>${atCap
+    ? notice("info", `This property has reached its ${limit}-unit limit. Archive an unused unit to add another.`)
+    : setupForm(property, `<form class="form-grid" data-form="unit-create">
+        ${field("Unit label", `<input name="label" required maxlength="60" placeholder="e.g. Unit 2B">`)}
+        ${field("Occupancy status", `<select class="select" name="occupancyStatus">${Object.entries(OCCUPANCY_LABELS).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>`)}
+        ${field("Notes (optional)", `<input name="notes" maxlength="500">`, { full: true })}
+        <div class="field full"><button class="btn btn-primary" type="submit">Add unit</button></div>
+      </form>`)}`);
+  fill(root, "invite-form", operational(property, `<form class="form-grid" data-form="invite-create">
     ${field("Role", `<select class="select" name="role">
       <option value="tenant">Tenant</option>
       ${property.role === "owner" ? `<option value="admin">Property administrator</option>` : ""}
     </select>`)}
-    ${field("Unit (tenants)", `<select class="select" name="unitId"><option value="">—</option>${options(units.filter((u) => u.status === "active"), (u) => u.label)}</select>`)}
+    ${field("Unit (tenants)", `<select class="select" name="unitId"><option value="">—</option>${options(activeUnits.filter((u) => !u.currentOccupancy), (u) => u.label)}</select>`, { hint: "Only units without a current tenant are listed." })}
     ${field("Move-in date", `<input type="date" name="moveInDate" value="${todayIso()}">`)}
     ${field("Restrict to email (optional)", `<input type="email" name="email">`, { hint: "If set, the invitee must sign in with this verified email." })}
     <div class="field full"><button class="btn btn-primary" type="submit">Create invitation</button></div>
-  </form>`);
+  </form>`));
+  const canSetup = ["draft", "pending_activation", "active"].includes(property.entitlement.lifecycle);
   fill(root, "units", table(
-    ["Unit", "Current tenant", "Since", "Status"],
+    ["Unit", "Tenant on SmartWatts", "Occupancy", "Notes", ""],
     units.map((u) => [
-      user(u.label),
-      u.currentOccupancy ? user(u.currentOccupancy.tenantEmail ?? "Tenant") : "Vacant",
-      u.currentOccupancy ? user(u.currentOccupancy.startDate) : "—",
-      user(u.status),
+      `${user(u.label)}${u.status === "archived" ? ` <span class="status off">Archived</span>` : ""}`,
+      u.currentOccupancy ? `${user(u.currentOccupancy.tenantEmail ?? "Tenant")}<div class="muted-note">since ${user(u.currentOccupancy.startDate)}</div>` : "—",
+      u.currentOccupancy ? "Occupied (member)" : OCCUPANCY_LABELS[u.occupancyStatus ?? "vacant"],
+      user(u.notes ?? ""),
+      u.status === "active" && canSetup ? `<details class="row-actions"><summary class="text-link">Edit</summary>
+        <form class="inline-form" data-form="unit-update" data-id="${encodeURIComponent(u.id)}">
+          <input name="label" required maxlength="60" value="${ctx.escape(u.label)}" aria-label="Unit label">
+          <select class="select" name="occupancyStatus" aria-label="Occupancy status">${Object.entries(OCCUPANCY_LABELS).map(([k, l]) => `<option value="${k}"${(u.occupancyStatus ?? "vacant") === k ? " selected" : ""}>${l}</option>`).join("")}</select>
+          <input name="notes" maxlength="500" value="${ctx.escape(u.notes ?? "")}" aria-label="Notes" placeholder="Notes">
+          <button class="btn btn-outline btn-small">Save</button>
+        </form>
+        <button class="btn btn-outline btn-small danger-link" data-act="unit-archive" data-id="${encodeURIComponent(u.id)}" data-label="${ctx.escape(u.label)}"${u.currentOccupancy ? ' disabled title="Record the move-out first"' : ""}>Archive unit</button>
+      </details>` : "",
     ]),
-    "No units yet.",
+    "No units yet. Add your first unit above.",
   ));
   fill(root, "invitations", table(
     ["Role", "Unit", "Email", "Status", "Expires", ""],
@@ -530,32 +627,46 @@ function metersPage(ctx) {
 }
 
 async function loadMeters(ctx, root) {
-  const [, data, units] = await Promise.all([propertyHeader(root), apiGet(`${base()}/meters`), apiGet(`${base()}/units`)]);
+  const [property, data, allUnits] = await Promise.all([propertyHeader(root), apiGet(`${base()}/meters`), apiGet(`${base()}/units`)]);
+  const units = allUnits.filter((u) => u.status === "active");
+  const retired = data.meters.filter((m) => m.status === "retired");
+  const canSetup = ["draft", "pending_activation", "active"].includes(property.entitlement.lifecycle);
   const meterLabel = Object.fromEntries(data.meters.map((m) => [m.id, m.label]));
-  const unitLabel = Object.fromEntries(units.map((u) => [u.id, u.label]));
-  const shared = data.meters.filter((m) => m.kind === "utility_shared");
-  const assignable = data.meters.filter((m) => m.kind !== "utility_shared");
+  const unitLabel = Object.fromEntries(allUnits.map((u) => [u.id, u.label]));
+  const activeMeters = data.meters.filter((m) => m.status !== "retired");
+  const shared = activeMeters.filter((m) => m.kind === "utility_shared");
+  const assignable = activeMeters.filter((m) => m.kind !== "utility_shared");
   fill(root, "meters", `
     <div class="two-panels">
-      ${ctx.panel("Register a meter", `<form class="form-grid" data-form="meter-create">
+      ${ctx.panel("Register a meter", setupForm(property, `<form class="form-grid" data-form="meter-create">
         ${field("Label", `<input name="label" required maxlength="60">`)}
         ${field("Type", `<select class="select" name="kind">${Object.entries(METER_KINDS).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>`)}
         ${field("Parent shared meter (submeters only)", `<select class="select" name="parentMeterId"><option value="">—</option>${options(shared, (m) => m.label)}</select>`)}
         ${field("Serial number (optional)", `<input name="serialNumber" maxlength="60">`)}
         ${field("Utility account no. (optional)", `<input name="utilityAccountNumber" maxlength="60">`)}
+        ${retired.length ? field("Replaces retired meter (optional)", `<select class="select" name="replacesMeterId"><option value="">—</option>${options(retired, (m) => m.label)}</select>`, { full: true, hint: "Use this after a meter replacement. The new meter starts a fresh register; the old meter keeps its history." }) : ""}
         <div class="field full"><button class="btn btn-primary" type="submit">Register meter</button></div>
-      </form>`)}
-      ${ctx.panel("Assign a meter to a unit", `<form class="form-grid" data-form="assignment-create">
+      </form>`))}
+      ${ctx.panel("Assign a meter to a unit (individual meters)", setupForm(property, `<form class="form-grid" data-form="assignment-create">
         ${field("Meter", `<select class="select" name="meterId" required>${options(assignable, (m) => m.label)}</select>`)}
         ${field("Unit", `<select class="select" name="unitId" required>${options(units, (u) => u.label)}</select>`)}
         ${field("Effective from", `<input type="date" name="effectiveFrom" required>`)}
         ${field("Effective to (optional)", `<input type="date" name="effectiveTo">`)}
         <div class="field full"><button class="btn btn-primary" type="submit">Assign</button></div>
-      </form>`)}
+      </form>`))}
     </div>
-    <div style="margin-top:14px">${ctx.panel("Meters", table(["Meter", "Type", "Parent", "Serial / account"], data.meters.map((m) => [
+    <div style="margin-top:14px">${ctx.panel("Meters", table(["Meter", "Type", "Parent", "Serial / account", "Status"], data.meters.map((m) => [
       user(m.label), METER_KINDS[m.kind], user(meterLabel[m.parentMeterId] ?? "—"), user([m.serialNumber, m.utilityAccountNumber].filter(Boolean).join(" · ") || "—"),
-    ]), "No meters yet."))}</div>
+      m.status === "retired"
+        ? `<span class="status off">Retired ${user(m.retiredOn)}</span><div class="muted-note">${user(m.retiredReason ?? "")}</div>`
+        : `<span class="status">In service</span>${m.replacesMeterId ? `<div class="muted-note">Replaced ${user(meterLabel[m.replacesMeterId] ?? "")}</div>` : ""}${canSetup ? `
+          <details class="row-actions"><summary class="text-link">Retire / replace</summary>
+            <form class="inline-form" data-form="meter-retire" data-id="${encodeURIComponent(m.id)}">
+              <input type="date" name="retiredOn" required max="${todayIso()}" aria-label="Date of final reading">
+              <input name="reason" required minlength="5" maxlength="300" placeholder="Reason, e.g. utility replaced meter" aria-label="Reason">
+              <button class="btn btn-outline btn-small">Retire meter</button>
+            </form><p class="muted-note">Record the final reading first. Assignments end on this date.</p></details>` : ""}`,
+    ]), "No meters yet. Register the utility meter(s) for this property."))}</div>
     <div style="margin-top:14px">${ctx.panel("Meter-to-unit assignments", table(["Meter", "Unit", "From", "To", ""], data.assignments.map((a) => [
       user(meterLabel[a.meterId]), user(unitLabel[a.unitId]), user(a.effectiveFrom), a.effectiveTo ? user(a.effectiveTo) : "Ongoing",
       a.effectiveTo ? "" : `<form class="inline-form" data-form="assignment-end" data-id="${encodeURIComponent(a.id)}"><input type="date" name="effectiveTo" required aria-label="End date"><button class="btn btn-outline btn-small">End</button></form>`,
@@ -566,7 +677,7 @@ async function loadMeters(ctx, root) {
         a.shares.map((s) => `${user(unitLabel[s.unitId])}: ${user(s.weight)}`).join("<br>"),
         `${user(a.effectiveFrom)} – ${a.effectiveTo ? user(a.effectiveTo) : "ongoing"}`,
       ]), "No allocation agreements. Shared consumption stays with the owner and is not charged to tenants.")}
-      ${shared.length && units.length ? `<form class="form-grid" data-form="agreement-create" style="margin-top:12px">
+      ${shared.length && units.length && canSetup ? `<form class="form-grid" data-form="agreement-create" style="margin-top:12px">
         ${field("Shared meter", `<select class="select" name="meterId" required>${options(shared, (m) => m.label)}</select>`)}
         ${field("Effective from", `<input type="date" name="effectiveFrom" required>`)}
         ${field("Describe the written agreement (lease clause, method)", `<textarea name="description" required minlength="20" maxlength="600" rows="2"></textarea>`, { full: true })}
@@ -584,25 +695,33 @@ function readingsPage(ctx) {
 }
 
 async function loadReadings(ctx, root) {
-  const [, data, readings] = await Promise.all([propertyHeader(root), apiGet(`${base()}/meters`), apiGet(`${base()}/readings`)]);
+  const [property, data, readings] = await Promise.all([propertyHeader(root), apiGet(`${base()}/meters`), apiGet(`${base()}/readings`)]);
   const meterLabel = Object.fromEntries(data.meters.map((m) => [m.id, m.label]));
+  const inService = data.meters.filter((m) => m.status !== "retired");
+  const flagged = readings.filter((r) => r.anomalies?.length).length;
   fill(root, "readings", `
-    ${ctx.panel("Record a reading", `
+    ${ctx.panel("Record a reading", operational(property, `
       <label class="upload-drop"><input type="file" accept="image/*" class="sr-only" data-ocr="meter-photo"><span>Suggest value from a meter photo (OCR in your browser)</span></label>
       <p class="muted-note" data-slot="ocr-status"></p>
       <form class="form-grid" data-form="reading-create">
         <input type="hidden" name="source" value="manual"><input type="hidden" name="ocrSuggestedKwh" value="">
-        ${field("Meter", `<select class="select" name="meterId" required>${options(data.meters, (m) => `${m.label} (${METER_KINDS[m.kind]})`)}</select>`)}
-        ${field("Reading date", `<input type="date" name="readingDate" required max="${todayIso()}" value="${todayIso()}">`)}
-        ${field("Register value (kWh)", `<input name="valueKwh" inputmode="decimal" required>`)}
+        ${field("Meter", `<select class="select" name="meterId" required>${options(inService, (m) => `${m.label} (${METER_KINDS[m.kind]})`)}</select>`)}
+        ${field("Reading date (when you read the meter)", `<input type="date" name="readingDate" required max="${todayIso()}" value="${todayIso()}">`)}
+        ${field("Cumulative register value (kWh)", `<input name="valueKwh" inputmode="decimal" required>`, { hint: "The total shown on the meter, not the usage since the last reading." })}
+        ${field("Evidence photo (optional)", `<input type="file" name="evidence" accept="image/png,image/jpeg,application/pdf">`)}
         <label class="field full check"><input type="checkbox" name="confirmed" required> I checked this value against the physical meter.</label>
         <div class="field full"><button class="btn btn-primary" type="submit">Save verified reading</button></div>
-      </form>`)}
+      </form>`))}
+    ${flagged ? notice("warning", `${flagged} reading(s) are flagged for review. Flags never change values; correct a reading only if it was entered wrongly.`) : ""}
     <div style="margin-top:14px">${ctx.panel("Reading history", table(
-      ["Meter", "Date", "Value (kWh)", "Source", "Status", ""],
+      ["Meter", "Observed", "Register (kWh)", "Interval use", "Source", "Status", ""],
       readings.map((r) => [
-        user(meterLabel[r.meterId]), user(r.readingDate), `${whToKwh(r.valueWh)}`,
-        `${r.source === "photo_ocr" ? "Photo (OCR) · confirmed" : "Manual"}${r.correctionReason ? `<div class="muted-note">Correction: ${user(r.correctionReason)}</div>` : ""}`,
+        user(meterLabel[r.meterId]),
+        `${user(r.readingDate)}<div class="muted-note">Saved ${user(new Date(r.createdAt).toLocaleString())}</div>`,
+        `${whToKwh(r.valueWh)}`,
+        r.intervalWh === null || r.intervalWh === undefined ? `<span class="muted-note">First reading</span>`
+          : `${whToKwh(r.intervalWh)} kWh <div class="muted-note">over ${user(r.intervalDays)} day(s)</div>${(r.anomalies ?? []).map((a) => `<div class="flag-note">⚠ ${user(a)}</div>`).join("")}`,
+        `${r.source === "photo_ocr" ? "Photo (OCR) · confirmed" : "Manual"}${r.correctionReason ? `<div class="muted-note">Correction: ${user(r.correctionReason)}</div>` : ""}${r.evidencePath ? `<div><button class="text-link" data-act="reading-evidence" data-id="${encodeURIComponent(r.id)}">View evidence</button></div>` : ""}`,
         r.status === "active" ? "Current" : "Superseded",
         r.status === "active" ? `<details><summary class="text-link">Correct</summary><form class="inline-form" data-form="reading-correct" data-id="${encodeURIComponent(r.id)}">
           <input name="valueKwh" inputmode="decimal" required aria-label="Corrected value (kWh)" placeholder="kWh">
@@ -610,7 +729,7 @@ async function loadReadings(ctx, root) {
           <input name="reason" required minlength="5" maxlength="300" aria-label="Reason" placeholder="Reason">
           <button class="btn btn-outline btn-small">Save correction</button></form></details>` : "",
       ]),
-      "No readings yet.",
+      "No readings yet. Record the first reading for each meter to start tracking consumption.",
     ))}</div>`);
 }
 
@@ -622,11 +741,11 @@ function billsPage(ctx) {
 }
 
 async function loadBills(ctx, root) {
-  const [, data, bills] = await Promise.all([propertyHeader(root), apiGet(`${base()}/meters`), apiGet(`${base()}/utility-bills`)]);
+  const [property, data, bills] = await Promise.all([propertyHeader(root), apiGet(`${base()}/meters`), apiGet(`${base()}/utility-bills`)]);
   const meterLabel = Object.fromEntries(data.meters.map((m) => [m.id, m.label]));
   const utilityMeters = data.meters.filter((m) => m.kind !== "private_submeter");
   fill(root, "rental-bills", `
-    ${ctx.panel("Add an official bill", `
+    ${ctx.panel("Add a utility bill", operational(property, `
       <label class="upload-drop"><input type="file" accept="image/*" class="sr-only" data-ocr="rental-bill"><span>Suggest figures from a bill photo (OCR in your browser)</span></label>
       <p class="muted-note" data-slot="ocr-status"></p>
       <form class="form-grid" data-form="rental-bill-create">
@@ -637,19 +756,23 @@ async function loadBills(ctx, root) {
         ${field("Period end", `<input type="date" name="periodEnd" required max="${todayIso()}">`)}
         ${field("Total kWh", `<input name="totalKwh" inputmode="decimal" required>`)}
         ${field("Total amount (₱)", `<input name="amount" inputmode="decimal" required>`)}
+        ${field("Charge breakdown (optional)", `<textarea name="components" rows="3" placeholder="Generation = 6,120.00&#10;Transmission = 980.50&#10;Taxes = 1,200.25"></textarea>`, { full: true, hint: "One charge per line as Label = amount. The lines must add up to the total amount." })}
         ${field("Bill document (PDF/JPEG/PNG, optional)", `<input type="file" name="document" accept="application/pdf,image/png,image/jpeg">`, { full: true })}
-        <div class="field full"><button class="btn btn-primary" type="submit">Save official bill</button></div>
-      </form>`)}
+        <p class="muted-note full">You enter these figures from your bill. SmartWatts is not connected to MERALCO or other utility systems and does not verify them.</p>
+        <div class="field full"><button class="btn btn-primary" type="submit">Save bill</button></div>
+      </form>`))}
     <div style="margin-top:14px">${ctx.panel("Bills", table(
       ["Meter", "Period", "kWh", "Amount", "Document", ""],
       bills.map((b) => [
-        user(meterLabel[b.meterId]), `${user(b.periodStart)} – ${user(b.periodEnd)}`,
-        `${whToKwh(b.totalWh)} ${kindBadge("official_utility_bill")}`, formatPeso(b.amountCentavos),
+        `${user(meterLabel[b.meterId])}${b.billNumber ? `<div class="muted-note">Bill no. ${user(b.billNumber)}</div>` : ""}`,
+        `${user(b.periodStart)} – ${user(b.periodEnd)}`,
+        `${whToKwh(b.totalWh)} ${kindBadge("owner_entered")}`,
+        `${formatPeso(b.amountCentavos)}${b.chargeComponents?.length ? `<details><summary class="text-link">Breakdown</summary>${b.chargeComponents.map((c) => `<div class="muted-note">${user(c.label)}: ${formatPeso(c.amountCentavos)}</div>`).join("")}</details>` : ""}`,
         b.documentPath ? `<button class="text-link" data-act="bill-document" data-id="${encodeURIComponent(b.id)}">View</button>` : "—",
-        `<div class="toolbar"><button class="btn btn-primary btn-small" data-act="statements-generate" data-id="${encodeURIComponent(b.id)}">Generate statements</button>
-         <button class="btn btn-outline btn-small" data-act="reconciliation-show" data-id="${encodeURIComponent(b.id)}">Reconciliation</button></div>`,
+        property.entitlement.active ? `<div class="toolbar"><button class="btn btn-primary btn-small" data-act="statements-generate" data-id="${encodeURIComponent(b.id)}">Generate draft statements</button>
+         <button class="btn btn-outline btn-small" data-act="reconciliation-show" data-id="${encodeURIComponent(b.id)}">Reconciliation</button></div>` : "",
       ]),
-      "No official bills yet.",
+      "No bills recorded yet.",
     ))}</div>`);
 }
 
@@ -669,29 +792,49 @@ function reconciliationHtml(ctx, run) {
 
 // ------------------------------------------------------------ statements
 function statementsPage(ctx) {
-  return `${ctx.pageHead("Tenant statements", "Review drafts, then finalize. Finalized statements are immutable; corrections create a new version.")}
-    ${slot("entitlement", "")}${legal()}${slot("statements")}`;
+  return `${ctx.pageHead("Tenant statements", "Draft → Reviewed → Published. Tenants only see published statements; corrections create a new version.")}
+    ${slot("entitlement", "")}${legal()}${slot("review-requests", "")}${slot("statements")}`;
 }
 
 async function loadStatements(ctx, root) {
-  const [, statements, units, members] = await Promise.all([
+  const [property, statements, units, members, requests] = await Promise.all([
     propertyHeader(root), apiGet(`${base()}/statements`), apiGet(`${base()}/units`), apiGet(`${base()}/members`),
+    apiGet(`${base()}/review-requests`).catch(() => []),
   ]);
+  const active = property.entitlement.active;
+  const statementById = Object.fromEntries(statements.map((s) => [s.id, s]));
   const unitLabel = Object.fromEntries(units.map((u) => [u.id, u.label]));
   const tenantEmail = Object.fromEntries(members.members.map((m) => [m.uid, m.email]));
+  fill(root, "review-requests", requests.length ? ctx.panel("Tenant review requests", requests.map((r) => {
+    const st = statementById[r.statementId];
+    return `<div class="review-request ${r.status}">
+      <p><b>${user(unitLabel[r.unitId] ?? "Unit")}</b> · ${user(r.tenantEmail ?? "Tenant")} · ${st ? `${user(st.periodStart)} – ${user(st.periodEnd)}` : ""}
+        <span class="status ${r.status === "open" ? "pending" : ""}">${r.status === "open" ? "Open" : "Answered"}</span></p>
+      <p class="stat-foot">“${user(r.message)}”</p>
+      ${r.status === "open" ? `<form class="inline-form" data-form="review-resolve" data-id="${encodeURIComponent(r.id)}">
+        <input name="resolution" required minlength="5" maxlength="1000" placeholder="Your response to the tenant" aria-label="Response">
+        <button class="btn btn-outline btn-small">Send response</button></form>` : `<p class="muted-note">Response: ${user(r.resolution)}</p>`}
+    </div>`;
+  }).join("")) : "");
   fill(root, "statements", statements.length ? statements.map((s) => ctx.panel(
-    `<span translate="no">${ctx.escape(unitLabel[s.unitId] ?? s.unitId)}</span> · ${ctx.escape(s.periodStart)} – ${ctx.escape(s.periodEnd)} <small>v${s.version} · ${STATUS_LABELS[s.status]}</small>`,
+    `<span translate="no">${ctx.escape(unitLabel[s.unitId] ?? s.unitId)}</span> · ${ctx.escape(s.periodStart)} – ${ctx.escape(s.periodEnd)} <small>v${s.version} · ${STATUS_LABELS[statementStage(s)]}</small>`,
     `${s.needsReview ? notice("danger", `Needs review: ${ctx.escape(s.reviewReason ?? "")}`) : ""}
+     <ol class="stage-track" aria-label="Statement stage">${["draft", "reviewed", "finalized"].map((stage, i) => {
+       const order = { draft: 0, reviewed: 1, finalized: 2 }[statementStage(s)] ?? -1;
+       return `<li class="${order >= i ? "done" : ""}">${STATUS_LABELS[stage]}</li>`;
+     }).join("")}</ol>
      <p class="stat-foot">Tenant: ${user(s.tenantUid ? tenantEmail[s.tenantUid] ?? s.tenantUid : "Not assigned")}</p>
+     ${statementMeta(s)}
      ${statementLines(s)}
      <div class="bill-amount">${formatPeso(s.totalCentavos)}</div>
      ${calculationDetails(s)}
      ${s.voidReason ? `<p class="muted-note">Voided: ${user(s.voidReason)}</p>` : ""}
      <div class="toolbar">
-       ${s.status === "draft" && !s.needsReview ? `<button class="btn btn-primary btn-small" data-act="statement-finalize" data-id="${encodeURIComponent(s.id)}">Finalize</button>` : ""}
+       ${active && statementStage(s) === "draft" && !s.needsReview && s.tenantUid ? `<button class="btn btn-primary btn-small" data-act="statement-review" data-id="${encodeURIComponent(s.id)}">Mark as reviewed</button>` : ""}
+       ${active && statementStage(s) === "reviewed" ? `<button class="btn btn-primary btn-small" data-act="statement-finalize" data-id="${encodeURIComponent(s.id)}">Publish to tenant</button>` : ""}
        ${s.status === "draft" || s.status === "finalized" ? `<button class="btn btn-outline btn-small" data-act="statement-void" data-id="${encodeURIComponent(s.id)}">Void</button>` : ""}
      </div>`,
-  )).join("") : `<p class="muted-note">No statements yet. Generate them from an official bill.</p>`);
+  )).join("") : `<p class="muted-note">No statements yet. Record a utility bill, then generate draft statements from it.</p>`);
 }
 
 // --------------------------------------------------------- subscription
@@ -699,19 +842,38 @@ function subscriptionPage(ctx) {
   return `${ctx.pageHead("Subscription", "SmartWatts Rentals is billed per property. Tenants are never charged by SmartWatts.")}${slot("subscription")}`;
 }
 
+const SUBSCRIPTION_ACTION_LABELS = {
+  request: "Activation requested", approve: "Approved", reject: "Request not approved", suspend: "Suspended",
+  reactivate: "Reactivated", extend: "Period extended", expire: "Expired", disable: "Disabled", restore: "Restored to draft",
+};
+const SOURCE_LABELS = { external_payment_verified: "Payment verified by SmartWatts staff (outside the app)", administrative_grant: "Administrative grant" };
+const fmtDate = (value) => (value ? user(new Date(value).toLocaleDateString("en-PH", { dateStyle: "medium" })) : "—");
+const fmtTime = (value) => (value ? user(new Date(value).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })) : "—");
+
 async function loadSubscription(ctx, root) {
   const sub = await apiGet(`${base()}/subscription`);
   const owner = getWorkspace().role === "owner";
+  const reasonTitle = { draft: "Reason your last request was not approved", suspended: "Suspension reason", disabled: "Reason", expired: "Note" }[sub.lifecycle];
+  const canRequest = owner && !sub.archived && sub.nextAction?.action === "request";
   fill(root, "subscription", ctx.panel("SmartWatts Rentals", `
     <div class="detail-list">
-      <div class="detail-row"><span>Status</span><b>${user(sub.status)}${sub.active ? "" : " — changes paused"}</b></div>
-      <div class="detail-row"><span>Price</span><b>${formatPeso(sub.priceCentavos)} per property per month (proposed)</b></div>
+      <div class="detail-row"><span>Status</span><b>${lifecycleBadge(sub.lifecycle)}</b></div>
+      <div class="detail-row"><span>Plan</span><b>SmartWatts Rentals · ${formatPeso(sub.priceCentavos)} per property per month (proposed)</b></div>
       <div class="detail-row"><span>Unit limit</span><b>${user(sub.unitLimit)} units</b></div>
-      <div class="detail-row"><span>Current period ends</span><b>${sub.currentPeriodEnd ? user(new Date(sub.currentPeriodEnd).toLocaleDateString()) : "—"}</b></div>
-      <div class="detail-row"><span>Activation requested</span><b>${sub.activationRequestedAt ? user(new Date(sub.activationRequestedAt).toLocaleString()) : "No"}</b></div>
+      <div class="detail-row"><span>Entitlement period</span><b>${sub.currentPeriodEnd ? `${fmtDate(sub.currentPeriodStart)} – ${fmtDate(sub.currentPeriodEnd)}` : "—"}</b></div>
+      <div class="detail-row"><span>Activation request</span><b>${sub.activationRequestedAt ? `Sent ${fmtTime(sub.activationRequestedAt)} · waiting for review` : sub.lastRequestedAt ? `Last sent ${fmtTime(sub.lastRequestedAt)}` : "Not requested"}</b></div>
+      ${sub.activationSource ? `<div class="detail-row"><span>Activated by</span><b>${SOURCE_LABELS[sub.activationSource] ?? user(sub.activationSource)}</b></div>` : ""}
+      <div class="detail-row"><span>Next step</span><b>${user(sub.nextAction?.label ?? "—")}</b></div>
     </div>
-    ${notice("info", "Online payment is not enabled. SmartWatts staff activate subscriptions manually after an approved payment process. No card or e-wallet details are collected here.")}
-    ${owner && !sub.active ? `<button class="btn btn-primary" data-act="subscription-request">Request activation</button>` : ""}`));
+    ${sub.statusReason && reasonTitle ? notice(sub.lifecycle === "draft" || sub.lifecycle === "expired" ? "warning" : "danger", `<b>${reasonTitle}:</b> ${user(sub.statusReason)}`) : ""}
+    ${notice("info", "Online payment is not enabled. SmartWatts staff review requests and activate subscriptions after verifying payment outside the app or approving an administrative grant. No card or e-wallet details are collected here.")}
+    ${canRequest ? `<button class="btn btn-primary" data-act="subscription-request">${user(sub.nextAction.label)}</button>` : ""}`)
+    + (sub.history?.length ? `<div style="margin-top:14px">${ctx.panel("Subscription history", table(["When", "Change", "Details"], sub.history.map((h) => [
+      fmtTime(h.at), SUBSCRIPTION_ACTION_LABELS[h.action] ?? user(h.action),
+      [h.periodEnd ? `Until ${fmtDate(h.periodEnd)}` : "", h.reason ? user(h.reason) : ""].filter(Boolean).join(" · ") || "—",
+    ])))}</div>` : "")
+    + (owner && !sub.archived ? `<div style="margin-top:14px">${ctx.panel("Archive this property", `<p class="stat-foot">Archiving makes the property read-only for everyone. Readings, bills, statements, and tenancy history are kept. Record move-outs for current tenants first.</p>
+      <button class="btn btn-outline danger-link" data-act="property-archive">Archive property</button>`)}</div>` : ""));
 }
 
 // ---------------------------------------------------------------- audit
@@ -728,15 +890,25 @@ async function loadAudit(_ctx, root) {
 
 // ---------------------------------------------------------------- tenant
 function tenantStatementsPage(ctx) {
-  return `${ctx.pageHead("My electricity statements", "Official statements your landlord has finalized for your unit.")}
+  return `${ctx.pageHead("My rental electricity", "Your unit, billing arrangement, and the statements your landlord has published.")}
     ${legal()}${slot("tenant-unit")}${slot("tenant-statements")}`;
 }
 
 async function loadTenantStatements(ctx, root) {
-  const [unit, statements] = await Promise.all([apiGet(`${base()}/me/unit`), apiGet(`${base()}/me/statements`)]);
-  fill(root, "tenant-unit", ctx.panel(`<span translate="no">${ctx.escape(unit.propertyName)}</span> · <span translate="no">${ctx.escape(unit.unitLabel)}</span>`, `
-    ${table(["Meter", "Type", "Assigned"], unit.meters.map((m) => [user(m.label), METER_KINDS[m.kind], `${user(m.effectiveFrom)} – ${m.effectiveTo ? user(m.effectiveTo) : "ongoing"}`]), "No meter is assigned to your unit.")}
-    <p class="stat-foot">You do not pay SmartWatts. Your appliances, schedules, savings plans, and AI chats are private — your landlord cannot see them.</p>`));
+  const [unit, statements, requests] = await Promise.all([
+    apiGet(`${base()}/me/unit`), apiGet(`${base()}/me/statements`), apiGet(`${base()}/me/review-requests`).catch(() => []),
+  ]);
+  const requestsByStatement = {};
+  for (const r of requests) (requestsByStatement[r.statementId] ??= []).push(r);
+  fill(root, "tenant-unit", `<div class="two-panels">${ctx.panel(`<span translate="no">${ctx.escape(unit.propertyName)}</span> · <span translate="no">${ctx.escape(unit.unitLabel)}</span>`, `
+    ${unit.propertyAddress ? `<p class="muted-note">${user(unit.propertyAddress)}</p>` : ""}
+    <h4>Your billing arrangement</h4>
+    ${table(["Meter", "Type", "Assigned"], unit.meters.map((m) => [`<b>${user(m.label)}</b>`, METER_KINDS[m.kind], `<span class="nowrap">${user(m.effectiveFrom)}</span> – ${m.effectiveTo ? `<span class="nowrap">${user(m.effectiveTo)}</span>` : "ongoing"}`]), unit.sharedArrangements?.length ? "No individual meter is assigned to your unit." : "No meter or allocation is set up for your unit yet.")}
+    ${(unit.sharedArrangements ?? []).map((a) => `<div class="shared-arrangement">${kindBadge("allocation_based_charge")}
+      <p><b>${user(a.meterLabel)}</b> is a shared meter. Your unit's agreed share is <b>${user(a.unitWeight)} of ${user(a.totalWeight)}</b> (${user(Math.round((a.unitWeight / a.totalWeight) * 1000) / 10)}%) of the shared consumption that is allocated to tenants.</p>
+      <p class="muted-note">Agreement: ${user(a.description)} · from ${user(a.effectiveFrom)}${a.effectiveTo ? ` to ${user(a.effectiveTo)}` : ""}. This is an allocation, not a measurement of your unit.</p></div>`).join("")}
+    <p class="stat-foot">You do not pay SmartWatts. Your appliances, schedules, savings plans, and AI chats are private — your landlord cannot see them.</p>`)}
+    ${await notificationsPanel(ctx, getWorkspace().propertyId)}</div>`);
   const finalized = statements.filter((s) => s.status === "finalized");
   const calendarRecords = finalized.map((s) => {
     const measured = s.lines.filter((line) => line.consumptionKind !== "not_individually_measured" && line.wh !== null);
@@ -757,12 +929,75 @@ async function loadTenantStatements(ctx, root) {
      <p class="stat-foot">Parent official bill: ${user(s.utilityBill.periodStart)} – ${user(s.utilityBill.periodEnd)},
        ${whToKwh(s.utilityBill.totalWh)} kWh, ${formatPeso(s.utilityBill.amountCentavos)}${s.utilityBill.billNumber ? `, bill no. ${user(s.utilityBill.billNumber)}` : ""}.</p>
      ${calculationDetails(s)}
+     ${statementMeta(s)}
+     ${(requestsByStatement[s.id] ?? []).map((r) => `<div class="review-request ${r.status}"><p class="stat-foot">You asked: “${user(r.message)}” · <b>${r.status === "open" ? "Waiting for your landlord" : "Answered"}</b></p>${r.resolution ? `<p class="muted-note">Response: ${user(r.resolution)}</p>` : ""}</div>`).join("")}
+     ${s.status === "finalized" && !(requestsByStatement[s.id] ?? []).some((r) => r.status === "open") ? `<details><summary class="text-link">Ask your landlord to re-check this statement</summary>
+       <form class="inline-form" data-form="tenant-review-request" data-id="${encodeURIComponent(s.id)}">
+         <input name="message" required minlength="10" maxlength="1000" placeholder="What looks wrong?" aria-label="Message to your landlord">
+         <button class="btn btn-outline btn-small">Send request</button></form></details>` : ""}
      <p class="muted-note">${ctx.escape(s.legalReviewNotice)}</p>`,
-  )).join("") : `<p class="muted-note">No finalized statements yet.</p>`));
+  )).join("") : `<p class="muted-note">No published statements yet. Your landlord publishes statements after recording and reviewing a utility bill.</p>`));
 }
 
 function tenantMetersPage(ctx) {
   return `${ctx.pageHead("My meter history", "Verified readings from meters that measure your unit only.")}${slot("tenant-meters")}`;
+}
+
+function historyPage(ctx, tenant = false) {
+  return `${ctx.pageHead(tenant ? "My rental history" : "Historical Data", tenant ? "Your own readings, published statements, occupancy, and allocation records." : "Property electricity, billing, occupancy, allocation, subscription, and audit records.")}
+    <form class="filter-row" data-form="history-filter">
+      <label>From <input type="date" name="start"></label><label>To <input type="date" name="end"></label>
+      <label>Preset <select name="preset"><option value="custom">Custom period</option><option value="30">Last 30 days</option><option value="3">Last 3 months</option><option value="6">Last 6 months</option><option value="12">Last 12 months</option></select></label>
+      ${tenant ? "" : `<label>Unit <select name="unitId"><option value="">All units</option></select></label><label>Meter <select name="meterId"><option value="">All meters</option></select></label>`}
+      <label>Record type <select name="type"><option value="">All history</option>${(tenant ? ["reading", "statement", "occupancy", "allocation"] : ["reading", "bill", "statement", "occupancy", "allocation", "audit", "subscription"]).map((x) => `<option value="${x}">${x[0].toUpperCase()}${x.slice(1)}</option>`).join("")}</select></label>
+      <button class="btn btn-outline btn-small">Apply filters</button>
+      <button class="btn btn-outline btn-small" type="button" data-act="history-export">Export this page CSV</button>
+    </form>${slot("history-summary")}${slot("history-records")}${slot("history-more")}`;
+}
+
+let latestHistoryPage = null;
+let historyFilters = {};
+async function loadHistory(ctx, root, tenant = false, cursor = null, filters = {}) {
+  const params = new URLSearchParams({ limit: "50" });
+  for (const key of ["start", "end", "type", "unitId", "meterId"]) if (filters[key]) params.set(key, filters[key]);
+  if (cursor) params.set("cursor", cursor);
+  const endpoint = tenant ? `${base()}/me/history` : `${base()}/history`;
+  const [result, units, meters] = await Promise.all([
+    apiGet(`${endpoint}?${params}`),
+    tenant ? Promise.resolve([]) : apiGet(`${base()}/units`),
+    tenant ? Promise.resolve([]) : apiGet(`${base()}/meters`).then((data) => data.meters ?? data),
+  ]);
+  latestHistoryPage = cursor && latestHistoryPage ? { ...result, records: [...latestHistoryPage.records, ...result.records], tenant, filters } : { ...result, tenant, filters };
+  historyFilters = filters;
+  result.records = latestHistoryPage.records;
+  const records = result.records;
+  fill(root, "history-summary", `<p class="muted-note">${result.total} matching records · dates shown as recorded in Asia/Manila. ${tenant ? "Only your records within your occupancy are included; shared usage is labeled as an allocation." : "Source values and status are preserved; shared usage is not presented as unit-metered consumption."}</p>`);
+  const rows = records.map((r) => {
+    const period = r.periodStart ? `${user(r.periodStart)} – ${user(r.periodEnd ?? "")}` : user(r.date);
+    const amount = Number.isInteger(r.totalCentavos) ? formatPeso(r.totalCentavos) : Number.isInteger(r.amountCentavos) ? formatPeso(r.amountCentavos) : "—";
+    const usage = Number.isFinite(r.totalWh) ? `${whToKwh(r.totalWh)} kWh` : Number.isFinite(r.intervalWh) ? `${whToKwh(r.intervalWh)} kWh interval` : Number.isFinite(r.valueWh) ? `${whToKwh(r.valueWh)} kWh register` : r.allocatedWh ? `${whToKwh(r.allocatedWh)} kWh allocated` : "—";
+    const status = [r.status ?? (r.verified ? "verified" : "recorded"), r.source].filter(Boolean).join(" · ");
+    const ref = `${r.billNumber ? `Ref ${user(r.billNumber)}` : ""}${r.version ? `${r.billNumber ? " · " : ""}v${r.version}` : ""}` || "—";
+    const authorizedBillLink = !tenant && r.type === "bill" && r.documentPath
+      ? ` <button class="text-link" data-act="bill-document" data-id="${encodeURIComponent(r.id)}">View bill</button>` : "";
+    return [user(r.type), period, user(r.meterLabel ?? r.unitId ?? "Property"), usage, amount, user(status), `${ref}${authorizedBillLink}`];
+  });
+  fill(root, "history-records", table(["Record", "Period / Date", "Meter / Unit", "Consumption", "Recorded charge (not payment)", "Status / Source", "Reference"], rows, "No matching historical records."));
+  fill(root, "history-more", result.nextCursor ? `<button class="btn btn-outline" data-act="history-more" data-cursor="${result.nextCursor}">Load next 50</button>` : "");
+  const form = root.querySelector('[data-form="history-filter"]');
+  if (form) {
+    if (!tenant) {
+      form.elements.unitId.innerHTML = `<option value="">All units</option>${units.map((unit) => `<option value="${ctx.escape(unit.id)}">${ctx.escape(unit.label)}</option>`).join("")}`;
+      form.elements.meterId.innerHTML = `<option value="">All meters</option>${meters.map((meter) => `<option value="${ctx.escape(meter.id)}">${ctx.escape(meter.label)}</option>`).join("")}`;
+    }
+    for (const [key, value] of Object.entries(filters)) if (form.elements[key]) form.elements[key].value = value;
+  }
+}
+
+function rentalCsvCell(value) {
+  let text = String(value ?? "");
+  if (/^[\s\u0000-\u001f]*[=+@\-]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
 async function loadTenantMeters(_ctx, root) {
@@ -777,6 +1012,7 @@ async function loadTenantMeters(_ctx, root) {
 export const rentalPages = {
   "rental-overview": { title: "Property Overview", subtitle: "SmartWatts Rentals", render: overviewPage, load: loadOverview },
   "rental-analytics": { title: "Property Analytics", subtitle: "SmartWatts Rentals", render: analyticsPage, load: loadAnalytics },
+  "rental-history": { title: "Historical Data", subtitle: "SmartWatts Rentals", render: (ctx) => historyPage(ctx), load: (ctx, root) => loadHistory(ctx, root) },
   "rental-units": { title: "Units & Tenants", subtitle: "SmartWatts Rentals", render: unitsPage, load: loadUnits },
   "rental-meters": { title: "Meters & Allocation", subtitle: "SmartWatts Rentals", render: metersPage, load: loadMeters },
   "rental-readings": { title: "Meter Readings", subtitle: "SmartWatts Rentals", render: readingsPage, load: loadReadings },
@@ -786,12 +1022,86 @@ export const rentalPages = {
   "rental-audit": { title: "Audit Log", subtitle: "SmartWatts Rentals", render: auditPage, load: loadAudit },
   "tenant-statements": { title: "My Statements", subtitle: "SmartWatts Rentals · Tenant", render: tenantStatementsPage, load: loadTenantStatements },
   "tenant-meters": { title: "My Meter History", subtitle: "SmartWatts Rentals · Tenant", render: tenantMetersPage, load: loadTenantMeters },
+  "tenant-history": { title: "My Rental History", subtitle: "SmartWatts Rentals · Tenant", render: (ctx) => historyPage(ctx, true), load: (ctx, root) => loadHistory(ctx, root, true) },
 };
 
+function parseChargeComponents(text) {
+  const lines = String(text ?? "").split(/\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.map((line) => {
+    const match = line.match(/^(.+?)\s*[=:]\s*(-?[₱\d,.\s]+)$/);
+    const amount = match ? parsePesoToCentavos(match[2].replace(/[₱\s]/g, "")) : null;
+    if (!match || amount === null) throw new Error(`Could not read the charge line “${line}”. Use Label = amount.`);
+    return { label: match[1].trim(), amountCentavos: amount };
+  });
+}
+
+async function openDocument(path) {
+  const { getIdToken } = await import("./src/lib/apiAuth.ts");
+  const response = await fetch(path, { headers: { Authorization: `Bearer ${await getIdToken()}` } });
+  if (!response.ok) throw new Error("Could not open the document.");
+  const url = URL.createObjectURL(await response.blob());
+  window.open(url, "_blank", "noopener");
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export const rentalForms = {
+  async "history-filter"(form, ctx) {
+    historyFilters = formValues(form);
+    if (historyFilters.preset && historyFilters.preset !== "custom") {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat("en", { timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit" })
+        .formatToParts(new Date()).map(({ type, value }) => [type, value]));
+      const [year, month, day] = [Number(parts.year), Number(parts.month), Number(parts.day)];
+      const endDay = Date.UTC(year, month - 1, day);
+      const startDate = new Date(endDay);
+      if (historyFilters.preset === "30") startDate.setUTCDate(startDate.getUTCDate() - 30);
+      else {
+        const originalDay = startDate.getUTCDate();
+        startDate.setUTCDate(1);
+        startDate.setUTCMonth(startDate.getUTCMonth() - Number(historyFilters.preset));
+        const lastDay = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + 1, 0)).getUTCDate();
+        startDate.setUTCDate(Math.min(originalDay, lastDay));
+      }
+      const end = new Date(endDay).toISOString().slice(0, 10);
+      const start = startDate.toISOString().slice(0, 10);
+      historyFilters = { ...historyFilters, start, end };
+    }
+    await loadHistory(ctx, document.querySelector("#content"), getWorkspace().type === "tenant", null, historyFilters);
+  },
   async "unit-create"(form, ctx) {
     await apiPost(`${base()}/units`, formValues(form));
     ctx.toast("Unit added.");
+    ctx.render();
+  },
+  async "unit-update"(form, ctx) {
+    const v = formValues(form);
+    await apiPatch(`${base()}/units/${form.dataset.id}`, { label: v.label, occupancyStatus: v.occupancyStatus, notes: v.notes || null });
+    ctx.toast("Unit updated.");
+    ctx.render();
+  },
+  async "meter-retire"(form, ctx) {
+    const ok = await confirmDialog({
+      title: "Retire this meter?", danger: true, confirmLabel: "Retire meter",
+      body: "No more readings can be recorded on it, and its unit assignment ends on this date. Its readings and bills are kept.",
+    });
+    if (!ok) return;
+    await apiPost(`${base()}/meters/${form.dataset.id}/retire`, formValues(form));
+    ctx.toast("Meter retired. Register the replacement meter and link it with “Replaces retired meter”.");
+    ctx.render();
+  },
+  async "review-resolve"(form, ctx) {
+    await apiPost(`${base()}/review-requests/${form.dataset.id}/resolve`, formValues(form));
+    ctx.toast("Response sent to the tenant.");
+    ctx.render();
+  },
+  async "tenant-review-request"(form, ctx) {
+    await apiPost(`${base()}/me/statements/${form.dataset.id}/review-request`, formValues(form));
+    ctx.toast("Request sent to your landlord.");
+    ctx.render();
+  },
+  async "analytics-filter"(form, ctx) {
+    const v = formValues(form);
+    if (v.from && v.to && v.to < v.from) throw new Error("The To date must be on or after the From date.");
+    currentAnalyticsFilter = { from: v.from || "", to: v.to || "" };
     ctx.render();
   },
   async "invite-create"(form, ctx) {
@@ -828,7 +1138,9 @@ export const rentalForms = {
   },
   async "meter-create"(form, ctx) {
     const v = formValues(form);
-    await apiPost(`${base()}/meters`, { ...v, parentMeterId: v.parentMeterId ? idFrom(v.parentMeterId) : null });
+    await apiPost(`${base()}/meters`, {
+      ...v, parentMeterId: v.parentMeterId ? idFrom(v.parentMeterId) : null, replacesMeterId: v.replacesMeterId ? idFrom(v.replacesMeterId) : null,
+    });
     ctx.toast("Meter registered.");
     ctx.render();
   },
@@ -859,10 +1171,20 @@ export const rentalForms = {
   },
   async "reading-create"(form, ctx) {
     const v = formValues(form);
-    await apiPost(`${base()}/readings`, {
+    const saved = await apiPost(`${base()}/readings`, {
       meterId: idFrom(v.meterId), readingDate: v.readingDate, valueKwh: String(v.valueKwh).replace(/,/g, ""),
       source: v.source, ocrSuggestedKwh: v.ocrSuggestedKwh || null, confirmed: v.confirmed === "on",
     });
+    const file = form.elements.evidence?.files?.[0];
+    if (file) {
+      try {
+        await apiPutFile(`${base()}/readings/${encodeURIComponent(saved.id)}/evidence`, file);
+      } catch (error) {
+        ctx.toast(`Reading saved, but the evidence upload failed: ${errorMessage(error)}`);
+        ctx.render();
+        return;
+      }
+    }
     ctx.toast("Reading saved.");
     ctx.render();
   },
@@ -878,9 +1200,14 @@ export const rentalForms = {
     const v = formValues(form);
     const amountCentavos = parsePesoToCentavos(String(v.amount));
     if (amountCentavos === null) throw new Error("Enter the bill amount in pesos, e.g. 14,321.75.");
+    if (v.periodStart && v.periodEnd && v.periodEnd <= v.periodStart) throw new Error("The period end must be after the period start.");
+    const chargeComponents = parseChargeComponents(v.components);
+    if (chargeComponents.length && chargeComponents.reduce((sum, c) => sum + c.amountCentavos, 0) !== amountCentavos) {
+      throw new Error("The charge breakdown must add up exactly to the total amount.");
+    }
     const bill = await apiPost(`${base()}/utility-bills`, {
       meterId: idFrom(v.meterId), periodStart: v.periodStart, periodEnd: v.periodEnd, totalKwh: String(v.totalKwh).replace(/,/g, ""),
-      amountCentavos, billNumber: v.billNumber || null, source: v.source,
+      amountCentavos, billNumber: v.billNumber || null, source: v.source, chargeComponents,
     });
     const file = form.elements.document.files?.[0];
     if (file) {
@@ -892,19 +1219,32 @@ export const rentalForms = {
         return;
       }
     }
-    ctx.toast("Official bill saved.");
+    ctx.toast("Bill saved.");
     ctx.render();
   },
 };
 
 export const rentalActions = {
+  async "history-more"(button, ctx) {
+    if (!latestHistoryPage?.nextCursor) return;
+    await loadHistory(ctx, document.querySelector("#content"), latestHistoryPage.tenant, latestHistoryPage.nextCursor, historyFilters);
+  },
+  "history-export"(_button, ctx) {
+    if (!latestHistoryPage) return;
+    const rows = [["Record", "Date", "Scope", "Consumption", "Amount centavos", "Status", "Source", "Exported at"], ...latestHistoryPage.records.map((r) => [r.type, r.date, r.meterLabel ?? r.unitId ?? "Property", r.totalWh ?? r.intervalWh ?? r.valueWh ?? r.allocatedWh ?? "", r.totalCentavos ?? r.amountCentavos ?? "", r.status ?? "", r.source ?? "", new Date().toISOString()])];
+    const blob = new Blob([rows.map((row) => row.map(rentalCsvCell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `smartwatts-rental-history-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    ctx.toast("Current authorized history page exported as CSV.");
+  },
   async "invite-revoke"(button, ctx) {
+    if (!await confirmDialog({ title: "Revoke this invitation?", body: "The link and QR code will stop working immediately.", confirmLabel: "Revoke", danger: true })) return;
     await apiPost(`${base()}/invitations/${button.dataset.id}/revoke`);
     ctx.toast("Invitation revoked.");
     ctx.render();
   },
   async "member-revoke"(button, ctx) {
-    if (!window.confirm("Remove this person's access? Any current occupancy ends today.")) return;
+    if (!await confirmDialog({ title: "Remove this person's access?", body: "Any current occupancy ends today. Their published statements stay available to them.", confirmLabel: "Remove access", danger: true })) return;
     await apiPost(`${base()}/members/${button.dataset.id}/revoke`);
     ctx.toast("Access removed.");
     ctx.render();
@@ -936,25 +1276,64 @@ export const rentalActions = {
     ctx.translate(root);
   },
   async "bill-document"(button) {
-    const { getIdToken } = await import("./src/lib/apiAuth.ts");
-    const response = await fetch(`${base()}/utility-bills/${button.dataset.id}/document`, { headers: { Authorization: `Bearer ${await getIdToken()}` } });
-    if (!response.ok) throw new Error("Could not open the bill document.");
-    const url = URL.createObjectURL(await response.blob());
-    window.open(url, "_blank", "noopener");
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    await openDocument(`${base()}/utility-bills/${button.dataset.id}/document`);
+  },
+  async "reading-evidence"(button) {
+    await openDocument(`${base()}/readings/${button.dataset.id}/evidence`);
+  },
+  async "statement-review"(button, ctx) {
+    await apiPost(`${base()}/statements/${button.dataset.id}/review`);
+    ctx.toast("Marked as reviewed. Publish it when you are ready for the tenant to see it.");
+    ctx.render();
   },
   async "statement-finalize"(button, ctx) {
-    if (!window.confirm("Finalize this statement? It cannot be edited afterwards; corrections create a new version.")) return;
+    if (!await confirmDialog({ title: "Publish this statement to the tenant?", body: "Published statements cannot be edited. Corrections create a new version.", confirmLabel: "Publish" })) return;
     await apiPost(`${base()}/statements/${button.dataset.id}/finalize`);
-    ctx.toast("Statement finalized and visible to the tenant.");
+    ctx.toast("Statement published and visible to the tenant.");
     ctx.render();
   },
   async "statement-void"(button, ctx) {
-    const reason = window.prompt("Reason for voiding this statement (shown in the audit log):");
+    const reason = await confirmDialog({
+      title: "Void this statement?", confirmLabel: "Void statement", danger: true,
+      body: "The tenant will see that it was voided. This is recorded in the audit log.",
+      input: { label: "Reason (at least 5 characters)", minLength: 5, maxLength: 300 },
+    });
     if (!reason) return;
     await apiPost(`${base()}/statements/${button.dataset.id}/void`, { reason });
     ctx.toast("Statement voided.");
     ctx.render();
+  },
+  async "unit-archive"(button, ctx) {
+    const ok = await confirmDialog({
+      title: `Archive ${button.dataset.label ?? "this unit"}?`, danger: true, confirmLabel: "Archive unit",
+      body: "Its readings, bills, statements, and tenancy history are kept. Open meter assignments end today. Archived units do not count toward the 10-unit limit.",
+    });
+    if (!ok) return;
+    await apiPost(`${base()}/units/${button.dataset.id}/archive`, { confirm: true });
+    ctx.toast("Unit archived.");
+    ctx.render();
+  },
+  async "property-archive"(_button, ctx) {
+    const ok = await confirmDialog({
+      title: "Archive this property?", danger: true, confirmLabel: "Archive property",
+      body: "Everyone keeps read access to existing records, but nothing can be changed afterwards.",
+    });
+    if (!ok) return;
+    await apiPost(`${base()}/archive`, { confirm: true });
+    await loadWorkspaces();
+    ctx.toast("Property archived.");
+    ctx.render();
+  },
+  async "rental-notification-read"(button, ctx) {
+    await apiPost(`/api/rentals/notifications/${button.dataset.id}/read`);
+    ctx.render();
+  },
+  "analytics-filter-clear"(_button, ctx) {
+    currentAnalyticsFilter = { from: "", to: "" };
+    ctx.render();
+  },
+  "analytics-print"() {
+    window.print();
   },
   async "subscription-request"(_button, ctx) {
     await apiPost(`${base()}/subscription/request-activation`);

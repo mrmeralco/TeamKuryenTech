@@ -49,7 +49,11 @@ test("dashboard loads and chat supports Tagalog selection", async ({ page }) => 
   await page.reload();
   await expect(page.locator("#pageTitle")).toContainText(/^Good (morning|noon|afternoon|evening)(, .+)?!$/);
   await expect(page.getByRole("button", { name: "Check in to get coins" })).toBeDisabled();
-  await page.getByLabel("I completed one energy-saving habit today.").check();
+  await page.getByLabel("Wattage (W)").fill("1000");
+  await page.getByLabel("Hours today").fill("8");
+  await page.getByLabel("Rate (₱/kWh)").fill("12.25");
+  await page.getByRole("button", { name: "Forecast cost" }).click();
+  await expect(page.locator(".quest-forecast")).toContainText("✓ Done");
   await page.getByRole("button", { name: "Check in to get coins" }).click();
   await expect(page.locator(".coin-checkin-card")).toContainText("Checked in today");
   await page.reload();
@@ -64,7 +68,7 @@ test("dashboard loads and chat supports Tagalog selection", async ({ page }) => 
   await expect(page.getByLabel("Monthly target (kWh)")).toHaveValue("300");
   await page.getByRole("button", { name: "Watts Coins", exact: true }).click();
   await expect(page.locator("#pageTitle")).toHaveText("Watts Coins");
-  await expect(page.locator(".coin-balance-card")).toContainText("0.50 Watts Coins (₱0.50)");
+  await expect(page.locator(".coin-balance-card")).toContainText("0.55 Watts Coins (₱0.55)");
   await expect(page.locator(".coin-lock")).toContainText("Locked · Pending for Next Bill");
   await page.getByRole("button", { name: "SPENDING" }).click();
   await expect(page.locator(".coin-ledger")).toContainText("No coin transactions yet");
@@ -158,4 +162,34 @@ test("support page provides MERALCO contact links", async ({ page }) => {
     ["Instagram @meralco", "https://www.instagram.com/meralcoph/?hl=en", "_blank", "noopener noreferrer"],
     ["Meralco Messenger Message us", "https://m.me/147245968622316", "_blank", "noopener noreferrer"],
   ]);
+});
+
+test("energy tip quest needs a 15-second read and unlocks check-in", async ({ page }) => {
+  await page.clock.install();
+  await page.goto("/dashboard");
+  await page.evaluate(() => localStorage.removeItem("smartwatts-coins-guest"));
+  await page.reload();
+  const checkIn = page.getByRole("button", { name: "Check in to get coins" });
+  await expect(checkIn).toBeDisabled();
+  await page.getByRole("button", { name: "Read today's tip" }).click();
+  await expect(page.locator(".quest-tip-text")).toBeVisible();
+  const claim = page.locator('[data-action="quest-tip-claim"]');
+  await expect(claim).toBeDisabled();
+  await page.clock.runFor(15_500);
+  await expect(claim).toBeEnabled();
+  await claim.click();
+  await expect(page.locator(".quest-tip")).toContainText("✓ Done");
+  await expect(checkIn).toBeEnabled();
+  await page.screenshot({ path: "test-results/daily-quests.png", fullPage: false });
+});
+
+test("support FAQ groups questions into five expandable categories", async ({ page }) => {
+  await page.goto("/dashboard");
+  await page.locator('[data-page="support"]').first().click();
+  await expect(page.locator(".faq-category > summary")).toHaveCount(5);
+  await expect(page.locator(".faq-item")).toHaveCount(26);
+  await page.locator(".faq-category > summary", { hasText: "Electricity Consumption" }).click();
+  await page.getByText("How can I calculate my electricity consumption?").click();
+  await expect(page.getByText("kWh = (Watts × Hours Used) ÷ 1,000")).toBeVisible();
+  await expect(page.locator(".faq-refs a")).toHaveCount(4);
 });

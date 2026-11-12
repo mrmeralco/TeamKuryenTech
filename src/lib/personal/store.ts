@@ -7,7 +7,7 @@
  * configuration, data is kept on this device only (localStorage).
  */
 import {
-  addDoc, collection, deleteDoc, doc, getDoc, getDocs, serverTimestamp, setDoc,
+  addDoc, collection, deleteDoc, deleteField, doc, getDoc, getDocs, serverTimestamp, setDoc,
 } from "firebase/firestore";
 import { ensureUser } from "../apiAuth";
 import { auth, firestore } from "../firebase";
@@ -44,6 +44,10 @@ export interface PersonalBill {
   components?: ChargeComponents | null;
   previousReading?: number | null;
   presentReading?: number | null;
+  dueDate?: string | null;
+  billDate?: string | null;
+  paid?: boolean;
+  paidAt?: string | null;
 }
 
 export interface SavingsPlan {
@@ -59,6 +63,13 @@ type Kind = "appliances" | "bills" | "savingsPlans";
 type Records = { appliances: Appliance; bills: PersonalBill; savingsPlans: SavingsPlan };
 export interface PersonalUserProfile {
   displayName: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  phoneNumber: string | null;
+  serviceProvider: string | null;
+  serviceAddress: string | null;
+  utilityAccountNumber: string | null;
+  rateCategory: string | null;
   preferredLanguage: string | null;
   dwellingType: "homeowner" | "condo_apartment" | null;
   utilityRecordType: "meralco_bill" | "condo_soa" | "submeter_slip" | null;
@@ -175,9 +186,12 @@ export function saveBill(input: Omit<PersonalBill, "id">): Promise<string> {
   if (typeof input.previousReading === "number" && typeof input.presentReading === "number" && input.presentReading < input.previousReading) {
     throw new RangeError("The present reading cannot be lower than the previous reading.");
   }
+  const dueDate = input.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) ? input.dueDate : null;
+  const billDate = input.billDate && /^\d{4}-\d{2}-\d{2}$/.test(input.billDate) ? input.billDate : null;
   return save("bills", {
     periodStart: input.periodStart, periodEnd: input.periodEnd, kwh: input.kwh, amountCentavos: input.amountCentavos, source: input.source,
     components, previousReading: input.previousReading ?? null, presentReading: input.presentReading ?? null,
+    dueDate, billDate, paid: Boolean(input.paid), paidAt: input.paidAt ?? null,
   });
 }
 
@@ -200,34 +214,65 @@ export async function savePreferredLanguage(language: string): Promise<boolean> 
 
 export async function saveUserProfile(profile: {
   displayName?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  phoneNumber?: string | null;
+  serviceProvider?: string | null;
+  serviceAddress?: string | null;
+  utilityAccountNumber?: string | null;
+  rateCategory?: string | null;
   preferredLanguage?: string;
-  dwellingType?: "homeowner" | "condo_apartment";
-  utilityRecordType?: "meralco_bill" | "condo_soa" | "submeter_slip";
+  dwellingType?: "homeowner" | "condo_apartment" | null;
+  utilityRecordType?: "meralco_bill" | "condo_soa" | "submeter_slip" | null;
   baselineKwh?: number;
   baselinePeriodEnd?: string;
 }): Promise<boolean> {
   const user = auth?.currentUser;
   if (!firestore || !user) return false;
   const data: Record<string, unknown> = { updatedAt: serverTimestamp() };
-  if (profile.displayName && typeof profile.displayName === "string") {
-    data.displayName = profile.displayName.trim().slice(0, 100);
+  const clean = (value: string | null | undefined, label: string, max: number): string | null => {
+    if (value == null) return null;
+    const normalized = value.trim();
+    if (normalized.length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(normalized)) {
+      throw new RangeError(`${label} is too long or contains unsupported characters.`);
+    }
+    return normalized || null;
+  };
+  if (profile.displayName !== undefined || profile.firstName !== undefined || profile.lastName !== undefined) {
+    const displayName = profile.displayName !== undefined
+      ? clean(profile.displayName, "Display name", 100)
+      : [clean(profile.firstName, "First name", 100), clean(profile.lastName, "Last name", 100)].filter(Boolean).join(" ") || null;
+    data.displayName = displayName;
+  }
+  for (const [key, label, max] of [
+    ["firstName", "First name", 100], ["lastName", "Last name", 100], ["phoneNumber", "Mobile number", 32],
+    ["serviceProvider", "Electricity provider", 80], ["serviceAddress", "Service address", 300],
+    ["utilityAccountNumber", "Utility account number", 64], ["rateCategory", "Rate category", 60],
+  ] as const) {
+    if (key in profile) data[key] = clean(profile[key], label, max);
+  }
+  if (profile.phoneNumber?.trim() && !/^\+?[\d\s().-]{7,32}$/.test(profile.phoneNumber.trim())) {
+    throw new RangeError("Enter a valid mobile number or leave it blank.");
   }
   if (profile.preferredLanguage && LANGUAGE_CODE.test(profile.preferredLanguage)) {
     data.preferredLanguage = profile.preferredLanguage;
   }
-  if (profile.dwellingType) {
-    if (!["homeowner", "condo_apartment"].includes(profile.dwellingType)) throw new RangeError("Choose a valid home setup.");
-    data.dwellingType = profile.dwellingType;
-  }
-  if (profile.utilityRecordType) {
-    if (!["meralco_bill", "condo_soa", "submeter_slip"].includes(profile.utilityRecordType)) throw new RangeError("Choose a valid utility record source.");
-    data.utilityRecordType = profile.utilityRecordType;
-  }
-  if (profile.dwellingType || profile.utilityRecordType) {
-    if (!profile.dwellingType || !profile.utilityRecordType
+  const hasDwelling = "dwellingType" in profile;
+  const hasRecordType = "utilityRecordType" in profile;
+  if (hasDwelling !== hasRecordType) throw new RangeError("Choose both your home setup and utility record type.");
+  if (hasDwelling && hasRecordType) {
+    if (profile.dwellingType == null && profile.utilityRecordType == null) {
+      data.dwellingType = deleteField();
+      data.utilityRecordType = deleteField();
+    } else if (!profile.dwellingType || !profile.utilityRecordType
+      || !["homeowner", "condo_apartment"].includes(profile.dwellingType)
+      || !["meralco_bill", "condo_soa", "submeter_slip"].includes(profile.utilityRecordType)
       || (profile.dwellingType === "homeowner" && profile.utilityRecordType !== "meralco_bill")
       || (profile.dwellingType === "condo_apartment" && profile.utilityRecordType === "meralco_bill")) {
       throw new RangeError("Choose a utility record source that matches your home setup.");
+    } else {
+      data.dwellingType = profile.dwellingType;
+      data.utilityRecordType = profile.utilityRecordType;
     }
   }
   if (profile.baselineKwh !== undefined || profile.baselinePeriodEnd !== undefined) {
@@ -261,10 +306,11 @@ export async function ensureUserProfile(profile: { displayName?: string | null; 
   return true;
 }
 
-export async function loadUserProfile(): Promise<PersonalUserProfile | null> {
+export async function loadUserProfile(expectedUid?: string): Promise<PersonalUserProfile | null> {
   const user = auth?.currentUser;
-  if (!firestore || !user) return null;
+  if (!firestore || !user || (expectedUid && user.uid !== expectedUid)) return null;
   const snapshot = await getDoc(doc(firestore, "users", user.uid));
+  if (auth?.currentUser?.uid !== user.uid) return null;
   const data = snapshot.data();
   const dwellingType = data?.dwellingType === "homeowner" || data?.dwellingType === "condo_apartment" ? data.dwellingType : null;
   const utilityRecordType = data?.utilityRecordType === "meralco_bill" || data?.utilityRecordType === "condo_soa" || data?.utilityRecordType === "submeter_slip"
@@ -276,6 +322,13 @@ export async function loadUserProfile(): Promise<PersonalUserProfile | null> {
     : null;
   return {
     displayName: (typeof data?.displayName === "string" ? data.displayName : null) || user.displayName || null,
+    firstName: typeof data?.firstName === "string" ? data.firstName : null,
+    lastName: typeof data?.lastName === "string" ? data.lastName : null,
+    phoneNumber: typeof data?.phoneNumber === "string" ? data.phoneNumber : null,
+    serviceProvider: typeof data?.serviceProvider === "string" ? data.serviceProvider : null,
+    serviceAddress: typeof data?.serviceAddress === "string" ? data.serviceAddress : null,
+    utilityAccountNumber: typeof data?.utilityAccountNumber === "string" ? data.utilityAccountNumber : null,
+    rateCategory: typeof data?.rateCategory === "string" ? data.rateCategory : null,
     preferredLanguage: typeof data?.preferredLanguage === "string" && LANGUAGE_CODE.test(data.preferredLanguage) ? data.preferredLanguage : null,
     dwellingType,
     utilityRecordType,

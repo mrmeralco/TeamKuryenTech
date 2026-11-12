@@ -3,10 +3,15 @@ import {
   awardMonthlyReduction,
   CHART_COLORS,
   checkIn,
+  claimTipQuest,
   coinBalanceCents,
   formatCoins,
   gamificationCard,
   getCoinState,
+  hydrateDailyQuests,
+  setActiveRate,
+  startTipReading,
+  submitCostForecast,
   goalsPage,
   saveMonthlyEnergyTarget,
   renderGameChrome,
@@ -14,25 +19,35 @@ import {
   setGameCallbacks,
   setGameUser,
 } from "./game.js";
+import { FAQ_CATEGORIES, FAQ_REFERENCES } from "./faq-data.js";
+import { effectiveRateCentavosPerKwh } from "./src/lib/personal/estimates.ts";
 import { getLanguage, getSupportedLanguages, loadSupportedLanguages, setLanguage, translateText, translateTree } from "./i18n.js";
 import {
-  handleApplianceLabelScan, handlePersonalBillOcr, personalActions, personalForms, personalLoaders, personalPages, readInviteFromHash,
+  handleApplianceLabelScan, handlePersonalBillOcr, hasPendingInvite, personalActions, personalForms, personalLoaders, personalPages, readInviteFromHash,
 } from "./personal.js";
 import { handleRentalOcr, rentalActions, rentalForms, rentalPages } from "./rentals.js";
 import { handleLocatorInput, locatorActions, locatorPages } from "./locator.js";
 import { calendarActions, calendarPages } from "./calendar-view.js";
-import { getWorkspace, loadWorkspaces, setWorkspace, workspaceOptions } from "./workspace.js";
+import { getWorkspace, isPlatformAdmin, loadWorkspaces, setWorkspace, workspaceOptions } from "./workspace.js";
+import { platformActions, platformForms, platformPages } from "./platform-admin.js";
 import { currentAccount, onAccountChange } from "./src/lib/account.ts";
 import { escapeHtml } from "./src/lib/format.ts";
-import { listBills, loadPreferredLanguage, savePreferredLanguage } from "./src/lib/personal/store.ts";
+import { listAppliances, listBills, loadPreferredLanguage, savePreferredLanguage } from "./src/lib/personal/store.ts";
+import {
+  computePersonalAnalytics,
+  currentManilaMonthKey,
+  formatMonthLabel,
+  generateAnalyticsCsv,
+  getAvailableMonths,
+} from "./src/lib/personal/analytics.ts";
 import { auth } from "./src/lib/firebase.ts";
 
-// Signed-in user's profile (Google name/photo or the name entered at registration).
+// Identity labels use Firebase Authentication only. Never derive a person's name from their email.
 function userProfile() {
   const user = auth?.currentUser;
   const signedIn = Boolean(user && !user.isAnonymous);
   const email = signedIn ? user.email ?? "" : "";
-  const name = (signedIn && user.displayName?.trim()) || (email ? email.split("@")[0] : "");
+  const name = signedIn ? user.displayName?.trim() || "" : "";
   const parts = name.split(/\s+/).filter(Boolean);
   return {
     signedIn,
@@ -156,19 +171,22 @@ const tenantNavigation = [
   },
 ];
 
-const modulePages = { ...personalPages, ...rentalPages, ...locatorPages, ...calendarPages };
+const modulePages = { ...personalPages, ...rentalPages, ...locatorPages, ...calendarPages, ...platformPages };
+// Shown only when the API reports the verified platformAdmin claim; FastAPI re-checks every call.
+const platformNavigation = { label: "SMARTWATTS STAFF", items: [["platform-subscriptions", "badge-dollar-sign", "Rentals Subscriptions"]] };
 const workspaceHome = { personal: "dashboard", owner: "rental-overview", tenant: "tenant-statements" };
 const alwaysAvailable = new Set(["account", "support", "plans", "join", "rentals-start", "about", "notifications", "business-centers"]);
 
 function currentNavigation() {
   const { type } = getWorkspace();
-  return type === "owner" ? ownerNavigation : type === "tenant" ? tenantNavigation : personalNavigation;
+  const base = type === "owner" ? ownerNavigation : type === "tenant" ? tenantNavigation : personalNavigation;
+  return isPlatformAdmin() ? [...base, platformNavigation] : base;
 }
 
 const pageIdsOf = (groups) => new Set(groups.flatMap((group) => group.items.map(([id]) => id)));
 
 const pageTitles = {
-  dashboard: ["Good morning, Rean Justine!", "Here's what's happening with your electricity today."],
+  dashboard: ["Dashboard", "Here's what's happening with your electricity today."],
   realtime: ["Usage Patterns", "A sample daily usage profile — SmartWatts does not connect to meters."],
   history: ["Usage History", "Review and compare your past electricity consumption."],
   breakdown: ["Analytics", "Understand where your electricity is being consumed."],
@@ -182,7 +200,7 @@ const pageTitles = {
   support: ["Help & Support", "Find answers or contact the SmartWatts support team."],
   about: ["About Team", "Meet the people and purpose behind SmartWatts."],
 };
-pageTitles.rewards = ["Watts Coins", "Earn coins through daily check-ins and verified monthly energy savings."];
+pageTitles.rewards = ["Watts Coins", "Earn coins through daily quests, check-ins, and verified monthly energy savings."];
 for (const [id, page] of Object.entries(modulePages)) pageTitles[id] = [page.title, page.subtitle];
 
 const devices = [
@@ -425,40 +443,25 @@ async function exportAnalyticsReport(button) {
   }
   showExportNotice("Preparing your Analytics report…", "working");
   try {
-    const bills = await listBills().catch(() => []);
-    const savedBills = [...bills].sort((a, b) => a.periodEnd.localeCompare(b.periodEnd));
-    const billTotalKwh = savedBills.reduce((sum, bill) => sum + Number(bill.kwh || 0), 0);
-    const billTotalCentavos = savedBills.reduce((sum, bill) => sum + Number(bill.amountCentavos || 0), 0);
-    const rows = [
-      ["SmartWatts - Energy Analytics Report"],
-      ["Generated Month", new Date().toLocaleDateString("en-PH", { month: "long", year: "numeric" })],
-      ["Generated At", new Date().toISOString()],
-      ["Data Basis", savedBills.length ? "Saved personal bill records; appliance split below is a sample estimate" : "Sample household consumption profile and appliance breakdown"],
-      [],
-      ["Metric", "Value", "Unit", "Note"],
-      ["Total Recorded Usage", (savedBills.length ? billTotalKwh : 342.18).toFixed(2), "kWh", savedBills.length ? `${savedBills.length} saved bills` : "Sample month"],
-      ["Recorded Bill Amount", (savedBills.length ? billTotalCentavos / 100 : 1256.34).toFixed(2), "PHP", savedBills.length ? "Sum of saved bill amounts" : "Sample estimate"],
-      ["Largest Consumer", "38%", "Air Conditioner", "129.23 kWh estimated"],
-      ["Month-over-Month Change", "+12.4%", "vs last month", "Historical comparison"],
-      [],
-      ["Device / Appliance", "Usage (kWh)", "Share of Total (%)"],
-      ...devices.map(([_, name, usage, pct]) => [`"${name}"`, usage, `"${pct}"`]),
-      [],
-      ["Saved Bill Period", "Consumption (kWh)", "Bill Amount (PHP)", "Source"],
-      ...(savedBills.length ? savedBills.map((bill) => [
-        `${bill.periodStart} to ${bill.periodEnd}`,
-        Number(bill.kwh).toFixed(2),
-        (bill.amountCentavos / 100).toFixed(2),
-        bill.source === "ocr" ? "Reviewed OCR" : "Manual entry",
-      ]) : [["No saved bill records", "", "", "Sample profile used"]]),
-      [],
-      ["Privacy & Accuracy Notice", "SmartWatts does not connect to meters or IoT hardware. All estimates are calculated from user schedules or sample profiles."],
-    ];
-    const csv = rows.map((r) => r.join(",")).join("\r\n");
+    const selectedMonth = pageState.analyticsMonth || currentManilaMonthKey();
+    let data = pageState.currentAnalyticsData;
+    if (!data || data.selectedMonth !== selectedMonth) {
+      const bills = pageState.analyticsBills || (await listBills().catch(() => []));
+      const appliances = pageState.analyticsAppliances || (await listAppliances().catch(() => []));
+      data = computePersonalAnalytics({ selectedMonth, bills, appliances });
+      pageState.currentAnalyticsData = data;
+    }
+
+    const csv = generateAnalyticsCsv(data);
     await new Promise((r) => setTimeout(r, 400));
-    triggerBrowserDownload(`smartwatts-analytics-report-${new Date().toISOString().slice(0, 10)}.csv`, csv);
+    const filename = `smartwatts-analytics-report-${new Date().toISOString().slice(0, 10)}.csv`;
+    triggerBrowserDownload(filename, csv);
     showExportNotice("Analytics report generated and downloaded.", "success");
-    addNotification("chart-pie", "Analytics Report Ready", "Your SmartWatts analytics CSV was generated and downloaded.");
+    addNotification(
+      "chart-pie",
+      "Analytics Report Ready",
+      `Your SmartWatts analytics CSV for ${data.monthLabel} was generated and downloaded.`,
+    );
   } catch {
     showExportNotice("Unable to export analytics report. Please try again.", "failure");
   } finally {
@@ -697,6 +700,90 @@ function doughnut(id, labels, data) {
   );
 }
 
+function destroyChart(id) {
+  const canvas = document.getElementById(id);
+  if (!canvas) return;
+  const idx = charts.findIndex((c) => c.canvas === canvas);
+  if (idx !== -1) {
+    charts[idx].destroy();
+    charts.splice(idx, 1);
+  }
+}
+
+function renderBreakdownCharts() {
+  const data = pageState.currentAnalyticsData;
+  if (!data) return;
+
+  destroyChart("breakDonut");
+  destroyChart("breakLine");
+
+  if (data.donut.hasData) {
+    doughnut("breakDonut", data.donut.labels, data.donut.values);
+  }
+
+  const dark = document.body.classList.contains("theme-dark");
+  const textColor = dark ? "#e4d8c6" : "#776d61";
+  const canvas = document.getElementById("breakLine");
+  if (canvas) {
+    charts.push(
+      new Chart(canvas, {
+        type: "line",
+        data: {
+          labels: data.trend.labels.map((label) => translateText(label)),
+          datasets: [
+            {
+              label: translateText("Consumption (kWh)"),
+              data: data.trend.values,
+              borderColor: "#ff7a00",
+              backgroundColor: (context) => {
+                const area = context.chart.chartArea;
+                if (!area) return "rgba(255,122,0,.18)";
+                const gradient = context.chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+                gradient.addColorStop(0, "rgba(255,122,0,.42)");
+                gradient.addColorStop(1, "rgba(255,200,0,0)");
+                return gradient;
+              },
+              fill: true,
+              tension: 0.35,
+              pointBackgroundColor: "#ff7a00",
+              pointBorderColor: dark ? "#24211c" : "#fff",
+              pointBorderWidth: 2,
+              pointRadius: 4,
+              spanGaps: false,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: dark ? "#3a342b" : "#2b2140",
+              padding: 12,
+              cornerRadius: 14,
+              callbacks: {
+                label: (ctx) => (ctx.parsed.y !== null ? `${ctx.parsed.y} kWh` : "No bill recorded"),
+              },
+            },
+          },
+          scales: {
+            x: {
+              grid: { color: dark ? "rgba(255,255,255,.05)" : "rgba(0,0,0,.05)" },
+              ticks: { color: textColor },
+            },
+            y: {
+              grid: { color: dark ? "rgba(255,255,255,.05)" : "rgba(0,0,0,.05)" },
+              ticks: { color: textColor },
+              beginAtZero: true,
+            },
+          },
+        },
+      }),
+    );
+  }
+}
+
 const usageRanges = {
   today: { labels: ["12 AM", "3 AM", "6 AM", "9 AM", "12 PM", "3 PM", "6 PM", "9 PM", "12 AM"], values: [0.25, 0.16, 0.18, 0.42, 1.32, 1.02, 0.88, 1.12, 0.62] },
   last24: { labels: ["12 AM", "4 AM", "8 AM", "12 PM", "4 PM", "8 PM"], values: [0.25, 0.18, 0.42, 1.32, 0.88, 0.62] },
@@ -735,28 +822,45 @@ function renderCharts() {
   }
 
   if (currentPage === "breakdown") {
-    doughnut("breakDonut", ["Air Conditioner", "Refrigerator", "Lighting", "Others"], [38, 22, 15, 25]);
-    lineChart("breakLine", ["Jan", "Feb", "Mar", "Apr", "May"].map((label) => translateText(label)), [289, 319, 304, 325, 342], "kWh");
+    renderBreakdownCharts();
   }
 }
 
 // Shared screen content
-function deviceTable() {
+function deviceTable(rows = []) {
+  if (!rows || rows.length === 0) {
+    return `
+      <table class="table">
+        <thead><tr><th>Device</th><th>Usage (kWh)</th><th>%</th></tr></thead>
+        <tbody>
+          <tr>
+            <td colspan="3" class="muted-note" style="text-align:center;padding:24px">
+              No appliance data for this month. <a href="#" data-page="devices">Add appliances</a> to see category breakdown.
+            </td>
+          </tr>
+        </tbody>
+      </table>`;
+  }
+
   return `
     <table class="table">
       <thead><tr><th>Device</th><th>Usage (kWh)</th><th>%</th></tr></thead>
       <tbody>
-        ${devices
+        ${rows
           .map(
-            ([iconName, name, usage, percent]) => `
+            (row) => `
               <tr>
                 <td>
                   <div class="device-name">
-                    <span class="device-icon">${icon(iconName, 19)}</span>
-                    <div>${name}<div class="bar" style="width:160px"><span style="width:${parseInt(percent, 10)}%"></span></div></div>
+                    <span class="device-icon">${icon(row.icon || "package", 19)}</span>
+                    <div>
+                      ${escapeHtml(row.name)}
+                      <div class="bar" style="width:160px"><span style="width:${Math.min(100, Math.round(row.percent))}%"></span></div>
+                    </div>
                   </div>
                 </td>
-                <td>${usage}</td><td>${percent}</td>
+                <td>${row.kwh.toFixed(2)}</td>
+                <td>${row.percent.toFixed(1)}%</td>
               </tr>`,
           )
           .join("")}
@@ -824,7 +928,7 @@ function dashboardPage() {
         </div>
       </div>
       <div class="right-stack">
-        ${panel("Account Overview", `<div class="detail-list">${detail("Account Name", escapeHtml(userProfile().name || "—"))}${detail("Account Number", "1234 5678 9012")}${detail("Service Address", "123 Main St., Brgy. 123, Makati City, Metro Manila")}${detail("Rate", "Residential")}</div><button class="btn btn-outline" style="width:100%;margin-top:17px" data-page="account">View Account Details</button>`)}
+        ${panel("Account Overview", `<div class="detail-list">${detail("Account Name", escapeHtml(userProfile().name || "—"))}${detail("Signed-in email", escapeHtml(userProfile().email || "—"))}${detail("Service details", "Manage your saved details in Account Settings")}</div><button class="btn btn-outline" style="width:100%;margin-top:17px" data-page="account">View Account Details</button>`)}
         ${panel("Alerts & Notifications", notificationList(getNotifications().slice(0, 3)), `<button class="text-link" data-page="notifications">View all</button>`)}
         ${panel("Bill Estimate", `<div class="stat-label">Based on your current usage</div><div class="bill-amount">₱1,256.34</div><div class="progress"><span></span></div><div class="detail-list" style="margin:13px 0">${detail("Due Date", "May 20, 2026")}${detail("Billing Period", "Apr 1 – Apr 30, 2026")}</div><button class="btn btn-primary" style="width:100%" data-page="billing">View Bill & Pay</button>`)}
       </div>
@@ -863,25 +967,153 @@ function historyPage() {
 }
 
 function analyticsPage() {
-  const applianceLegend = legend(
-    ["Air Conditioner", "Refrigerator", "Lighting", "Others"],
-    ["129.23 kWh", "75.28 kWh", "51.33 kWh", "86.34 kWh"],
-  );
+  const bills = pageState.analyticsBills || [];
+  const appliances = pageState.analyticsAppliances || [];
+  const selectedMonth =
+    pageState.analyticsMonth ||
+    (bills.length > 0
+      ? [...bills].sort((a, b) => b.periodEnd.localeCompare(a.periodEnd))[0].periodEnd.slice(0, 7)
+      : currentManilaMonthKey());
+  pageState.analyticsMonth = selectedMonth;
+  const options = getAvailableMonths(bills, selectedMonth);
+
+  const monthOptionsHtml = options
+    .map(
+      (opt) =>
+        `<option value="${escapeHtml(opt.key)}"${opt.key === selectedMonth ? " selected" : ""}>${escapeHtml(opt.label)}</option>`,
+    )
+    .join("");
+
+  const data = computePersonalAnalytics({
+    selectedMonth,
+    bills,
+    appliances,
+  });
+  pageState.currentAnalyticsData = data;
+
+  const applianceLegend = data.donut.hasData
+    ? legend(
+        data.donut.labels,
+        data.donut.legend.map((item) => `${item.kwhText} (${item.percentText})`),
+      )
+    : `<p class="muted-note" style="padding:15px;text-align:center">No appliance data for this month.</p>`;
+
+  const largestIcon = data.largestConsumer.icon || "snowflake";
+  const trendIcon =
+    data.comparedToLastMonth.trendDirection === "up"
+      ? "trending-up"
+      : data.comparedToLastMonth.trendDirection === "down"
+        ? "trending-down"
+        : "activity";
 
   return `
-    ${pageHead("Energy analytics", "Analyze your electricity usage by category and time.", `<select class="select"><option>May 2026</option><option>April 2026</option></select><button class="btn btn-outline" data-action="export">Export Report</button>`)}
-    <div class="grid stats">
-      ${stat("chart-no-axes-column-increasing", "Total Usage", "342.18", "kWh", "This month", "")}
-      ${stat("badge-dollar-sign", "Estimated Cost", "₱1,256.34", "", "Current estimate", "")}
-      ${stat("snowflake", "Largest Consumer", "38%", "", "Air Conditioner", "")}
-      ${stat("trending-up", "Compared to Last Month", "12.4%", "", "Consumption increase", "")}
+    ${pageHead(
+      "Energy analytics",
+      "Analyze your electricity usage by category and time.",
+      `<select class="select" id="analyticsMonthSelect" data-analytics-month aria-label="Select reporting month">${monthOptionsHtml}</select><button class="btn btn-outline" data-action="export">Export Report</button>`,
+    )}
+    <div id="analyticsStats" class="grid stats">
+      ${stat("chart-no-axes-column-increasing", "Total Usage", data.totalUsage.displayValue, data.totalUsage.unit, data.totalUsage.foot, "")}
+      ${stat("badge-dollar-sign", "Estimated Cost", data.estimatedCost.displayValue, "", data.estimatedCost.foot, "")}
+      ${stat(largestIcon, "Largest Consumer", data.largestConsumer.displayPercent, "", data.largestConsumer.name, data.largestConsumer.foot)}
+      ${stat(trendIcon, "Compared to Last Month", data.comparedToLastMonth.displayText, "", data.comparedToLastMonth.foot, data.comparedToLastMonth.trendText)}
     </div>
     <div class="two-panels">
-      ${panel("Usage by Appliance", `<div class="donut-layout"><div class="donut-wrap"><canvas id="breakDonut"></canvas></div><div class="legend">${applianceLegend}</div></div>`)}
+      ${panel("Usage by Appliance", `<div class="donut-layout"><div class="donut-wrap"><canvas id="breakDonut"></canvas></div><div id="analyticsDonutLegend" class="legend">${applianceLegend}</div></div>`)}
       ${panel("Monthly Consumption Trend", chartCanvas("breakLine"))}
     </div>
-    <div style="margin-top:14px">${panel("Appliance Consumption Details", deviceTable())}</div>`;
+    <div style="margin-top:14px">${panel("Appliance Consumption Details", `<div id="analyticsTableWrap">${deviceTable(data.tableRows)}</div>`)}</div>`;
 }
+
+function updateAnalyticsView(monthKey, isUserAction = false) {
+  if (isUserAction) {
+    pageState.analyticsMonthSetByUser = true;
+  }
+  pageState.analyticsMonth = monthKey;
+  const bills = pageState.analyticsBills || [];
+  const appliances = pageState.analyticsAppliances || [];
+
+  const data = computePersonalAnalytics({
+    selectedMonth: monthKey,
+    bills,
+    appliances,
+  });
+  pageState.currentAnalyticsData = data;
+
+  const statsWrap = document.getElementById("analyticsStats");
+  if (statsWrap) {
+    const largestIcon = data.largestConsumer.icon || "snowflake";
+    const trendIcon =
+      data.comparedToLastMonth.trendDirection === "up"
+        ? "trending-up"
+        : data.comparedToLastMonth.trendDirection === "down"
+          ? "trending-down"
+          : "activity";
+
+    statsWrap.innerHTML = `
+      ${stat("chart-no-axes-column-increasing", "Total Usage", data.totalUsage.displayValue, data.totalUsage.unit, data.totalUsage.foot, "")}
+      ${stat("badge-dollar-sign", "Estimated Cost", data.estimatedCost.displayValue, "", data.estimatedCost.foot, "")}
+      ${stat(largestIcon, "Largest Consumer", data.largestConsumer.displayPercent, "", data.largestConsumer.name, data.largestConsumer.foot)}
+      ${stat(trendIcon, "Compared to Last Month", data.comparedToLastMonth.displayText, "", data.comparedToLastMonth.foot, data.comparedToLastMonth.trendText)}`;
+  }
+
+  const legendWrap = document.getElementById("analyticsDonutLegend");
+  if (legendWrap) {
+    legendWrap.innerHTML = data.donut.hasData
+      ? legend(
+          data.donut.labels,
+          data.donut.legend.map((item) => `${item.kwhText} (${item.percentText})`),
+        )
+      : `<p class="muted-note" style="padding:15px;text-align:center">No appliance data for this month.</p>`;
+  }
+
+  const tableWrap = document.getElementById("analyticsTableWrap");
+  if (tableWrap) {
+    tableWrap.innerHTML = deviceTable(data.tableRows);
+  }
+
+  renderBreakdownCharts();
+
+  const content = document.getElementById("content");
+  if (content) {
+    translateTree(content, getLanguage());
+  }
+}
+
+async function loadPersonalAnalytics(ctx, root) {
+  const [bills, appliances] = await Promise.all([
+    listBills().catch(() => []),
+    listAppliances().catch(() => []),
+  ]);
+  if (root.isStale) return;
+
+  pageState.analyticsBills = bills;
+  pageState.analyticsAppliances = appliances;
+
+  if (!pageState.analyticsMonthSetByUser) {
+    if (bills.length > 0) {
+      const sortedBills = [...bills].sort((a, b) => b.periodEnd.localeCompare(a.periodEnd));
+      pageState.analyticsMonth = sortedBills[0].periodEnd.slice(0, 7);
+    } else {
+      pageState.analyticsMonth = currentManilaMonthKey();
+    }
+  }
+
+  const select = document.getElementById("analyticsMonthSelect");
+  if (select) {
+    const options = getAvailableMonths(bills, pageState.analyticsMonth);
+    select.innerHTML = options
+      .map(
+        (opt) =>
+          `<option value="${escapeHtml(opt.key)}"${opt.key === pageState.analyticsMonth ? " selected" : ""}>${escapeHtml(opt.label)}</option>`,
+      )
+      .join("");
+  }
+
+  updateAnalyticsView(pageState.analyticsMonth);
+}
+
+personalLoaders.breakdown = loadPersonalAnalytics;
 
 function billingPage() {
   const breakdownRows = [
@@ -938,29 +1170,35 @@ function notificationsPage() {
     ${panel("Recent Activity", notificationList(allNotifications))}`;
 }
 
+let activeAccountTab = "personal";
 function accountPage() {
+  const tabs = [
+    ["personal", "Personal Information"], ["service", "Service Details"], ["security", "Security"], ["preferences", "Preferences"],
+  ];
   return `
-    ${pageHead("Account settings", "Manage your account details and preferences.")}
-    <div style="margin-bottom:14px">${panel("Sign-in & security", `<div data-slot="account-security"><p class="muted-note">Loading…</p></div>`)}</div>
+    ${pageHead("Account settings", "Manage your profile and account preferences.")}
+    <p class="muted-note" data-slot="account-context">Loading your authenticated account…</p>
     <div class="settings-layout">
-      <div class="panel settings-menu">
-        <button class="active">Personal Information</button>
-        <button>Service Details</button>
-        <button>Security</button>
-        <button>Preferences</button>
+      <div class="panel settings-menu" role="tablist" aria-label="Account settings sections" aria-orientation="vertical">
+        ${tabs.map(([id, label]) => `<button type="button" role="tab" id="account-tab-${id}" aria-controls="account-panel-${id}" data-account-tab="${id}" aria-selected="${activeAccountTab === id}" tabindex="${activeAccountTab === id ? "0" : "-1"}" class="${activeAccountTab === id ? "active" : ""}">${label}</button>`).join("")}
       </div>
-      ${panel("Personal Information", `
-        <form class="form-grid" id="accountForm">
-          <div class="field"><label>First Name</label><input value="Rean Justine"></div>
-          <div class="field"><label>Last Name</label><input value="Baulite"></div>
-          <div class="field"><label>Email Address</label><input type="email" value="rean.justine@example.com"></div>
-          <div class="field"><label>Mobile Number</label><input value="+63 9XX XXX XXXX"></div>
-          <div class="field full"><label>Service Address</label><input value="123 Main St., Brgy. 123, Makati City, Metro Manila"></div>
-          <div class="field"><label>Account Number</label><input value="1234 5678 9012" disabled></div>
-          <div class="field"><label>Rate Category</label><input value="Residential" disabled></div>
-          <div class="field full"><button class="btn btn-primary">Save Changes</button></div>
-        </form>`)}
+      <div class="account-settings-panels">
+        ${tabs.map(([id, label]) => `<section class="panel account-settings-panel" role="tabpanel" id="account-panel-${id}" aria-labelledby="account-tab-${id}" data-account-panel="${id}" tabindex="0"${activeAccountTab === id ? "" : " hidden"}>
+          <h3>${label}</h3><div data-slot="account-${id}"><p class="muted-note">Loading…</p></div>
+        </section>`).join("")}
+      </div>
     </div>`;
+}
+
+function faqHtml() {
+  const categories = FAQ_CATEGORIES.map((category, index) => `
+    <details class="faq-category" ${index === 0 ? "open" : ""}>
+      <summary>${escapeHtml(category.title)} <small>${category.items.length}</small></summary>
+      ${category.items.map(([question, answer]) => `
+        <details class="faq-item"><summary>${escapeHtml(question)}</summary><p class="stat-foot">${escapeHtml(answer)}</p></details>`).join("")}
+    </details>`).join("");
+  const references = FAQ_REFERENCES.map(([label, href]) => `<li><a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a></li>`).join("");
+  return `<div class="faq-list">${categories}</div><p class="faq-ref-title"><strong>Official Philippine references</strong></p><ul class="faq-refs">${references}</ul>`;
 }
 
 function supportPage() {
@@ -978,7 +1216,7 @@ function supportPage() {
   return `
     ${pageHead("Help & Support", "We're here to help you manage your electricity.")}
     <div class="grid card-grid">
-      ${panel("Frequently Asked Questions", `<h3>How is my bill estimated?</h3><p class="stat-foot">Your estimate uses recent consumption and sample rates. Your official bill is the final reference.</p><h3>Can my landlord see my appliances?</h3><p class="stat-foot">No. Appliances, schedules, savings plans, and AI chats are private to your account, even when you rent through SmartWatts Rentals.</p>`)}
+      ${panel("Frequently Asked Questions", faqHtml())}
       ${panel("Contact Support", `
         <p class="contact-intro"><strong>General Contact Information</strong><span>Your feedback means a lot to us</span></p>
         <div class="contact-options">
@@ -1099,12 +1337,18 @@ function runPageLoader(content) {
 }
 
 let lastAccountKey = null;
+let lastAccountUid = null;
+let lastObservedAuthUid = null;
 
 async function refreshWorkspaces({ force = true } = {}) {
   const memberships = await loadWorkspaces();
   const account = currentAccount();
-  const key = JSON.stringify([account.permanent, account.email, account.emailVerified, memberships]);
+  const key = JSON.stringify([account.permanent ? account.uid : null, account.permanent, account.email, account.emailVerified, memberships]);
   const changed = key !== lastAccountKey;
+  const previousUid = lastAccountUid;
+  if (account.permanent && previousUid && account.uid !== previousUid) activeAccountTab = "personal";
+  if (account.permanent) lastAccountUid = account.uid;
+  else if (!account.signedIn) lastAccountUid = null;
   lastAccountKey = key;
   // A background anonymous sign-in changes nothing visible (the Account page included);
   // re-rendering would wipe a half-typed email and password or any other form.
@@ -1127,6 +1371,8 @@ function render() {
   document.body.classList.toggle("workspace-rental", getWorkspace().type !== "personal");
   renderCharts();
   renderGameChrome(currentPage);
+  hydrateDailyQuests();
+  if (document.querySelector("#forecastRate")) loadActiveRate();
   updateNotificationBadge();
   animateNumbers();
   const language = getLanguage();
@@ -1135,6 +1381,16 @@ function render() {
   document.title = "SmartWatts | Energy Dashboard";
   translateTree(document.documentElement, language);
   runPageLoader(content);
+}
+
+// Prefill the Cost Forecast quest with the rate derived from the latest saved bill.
+function loadActiveRate() {
+  listBills()
+    .then((bills) => {
+      const latest = [...bills].sort((a, b) => b.periodEnd.localeCompare(a.periodEnd))[0];
+      setActiveRate(effectiveRateCentavosPerKwh(latest));
+    })
+    .catch(() => {});
 }
 
 function toast(message) {
@@ -1154,12 +1410,19 @@ function applyTheme(theme) {
   document.querySelector('meta[name="theme-color"]').setAttribute("content", dark ? "#191714" : "#fffaf2");
 }
 
+window.addEventListener("smartwatts-theme-change", (event) => {
+  if (event.detail === "light" || event.detail === "dark") applyTheme(event.detail);
+});
+
 function closeSidebar() {
   $("#sidebar").classList.remove("open");
   $("#menuToggle").setAttribute("aria-expanded", "false");
 }
 
 function navigate(page) {
+  // Keep old bookmarks safe while historical records live in their focused modules.
+  if (page === "rental-history") page = "rental-analytics";
+  if (page === "tenant-history") page = "tenant-statements";
   if (!pageTitles[page]) return;
   const workspace = getWorkspace();
   if (!pageIdsOf(currentNavigation()).has(page) && !alwaysAvailable.has(page)) {
@@ -1193,9 +1456,14 @@ const actionMessages = {
 };
 
 document.addEventListener("click", (event) => {
+  const accountTab = event.target.closest("[data-account-tab]");
+  if (accountTab) {
+    activateAccountTab(accountTab.dataset.accountTab, true);
+    return;
+  }
   const actButton = event.target.closest("[data-act]");
   if (actButton) {
-    const handler = personalActions[actButton.dataset.act] ?? rentalActions[actButton.dataset.act] ?? locatorActions[actButton.dataset.act] ?? calendarActions[actButton.dataset.act];
+    const handler = personalActions[actButton.dataset.act] ?? rentalActions[actButton.dataset.act] ?? locatorActions[actButton.dataset.act] ?? calendarActions[actButton.dataset.act] ?? platformActions[actButton.dataset.act];
     if (handler) {
       event.preventDefault();
       actButton.disabled = true;
@@ -1223,6 +1491,14 @@ document.addEventListener("click", (event) => {
     const action = actionButton.dataset.action;
     if (action === "checkin") {
       checkIn(actionButton);
+      return;
+    }
+    if (action === "quest-tip-open") {
+      startTipReading();
+      return;
+    }
+    if (action === "quest-tip-claim") {
+      claimTipQuest();
       return;
     }
     if (action === "coin-history") {
@@ -1258,11 +1534,32 @@ document.addEventListener("click", (event) => {
   }
 });
 
-document.addEventListener("change", (event) => {
-  if (event.target.id === "dailyHabitCheck") {
-    const button = document.querySelector('[data-action="checkin"]');
-    if (button) button.disabled = !event.target.checked;
-  }
+function activateAccountTab(tabId, focus = false) {
+  if (!["personal", "service", "security", "preferences"].includes(tabId)) return;
+  activeAccountTab = tabId;
+  document.querySelectorAll("[data-account-tab]").forEach((tab) => {
+    const selected = tab.dataset.accountTab === tabId;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    tab.classList.toggle("active", selected);
+    if (selected && focus) tab.focus();
+  });
+  document.querySelectorAll("[data-account-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.accountPanel !== tabId;
+  });
+}
+
+document.addEventListener("keydown", (event) => {
+  const tab = event.target.closest?.("[data-account-tab]");
+  if (!tab) return;
+  const tabs = [...document.querySelectorAll("[data-account-tab]")];
+  const index = tabs.indexOf(tab);
+  const next = event.key === "ArrowDown" || event.key === "ArrowRight" ? (index + 1) % tabs.length
+    : event.key === "ArrowUp" || event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length
+      : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  activateAccountTab(tabs[next].dataset.accountTab, true);
 });
 
 document.addEventListener("input", (event) => {
@@ -1290,6 +1587,10 @@ document.addEventListener("change", (event) => {
     setLanguage(changed.value);
     return;
   }
+  if (changed.matches("[data-analytics-month]")) {
+    updateAnalyticsView(changed.value, true);
+    return;
+  }
   if (changed.matches("[data-chart-range]")) {
     charts.forEach((chart) => chart.destroy());
     charts = [];
@@ -1313,15 +1614,8 @@ async function restoreAccountLanguage() {
   const { uid, permanent } = currentAccount();
   if (!permanent || !uid || languageRestoredFor === uid) return;
   languageRestoredFor = uid;
-  let hasLocalChoice = true;
-  try {
-    hasLocalChoice = localStorage.getItem("smartwatts-language") !== null;
-  } catch {
-    hasLocalChoice = true;
-  }
-  if (hasLocalChoice) return;
   const saved = await loadPreferredLanguage();
-  if (saved && saved !== getLanguage()) setLanguage(saved);
+  if (currentAccount().uid === uid && saved && saved !== getLanguage()) setLanguage(saved);
 }
 
 // Changing the interface language re-renders the page; carry unsaved form input across it.
@@ -1348,6 +1642,7 @@ function restoreFormValues(saved) {
 
 window.addEventListener("smartwatts-translation-error", (event) => {
   const detail = event.detail;
+  if (typeof detail === "string" && detail.includes("Google Cloud Translation is not configured")) return;
   toast(`Translation unavailable: ${typeof detail === "string" ? detail : "Please try again."}`);
 });
 
@@ -1383,7 +1678,7 @@ $("#themeToggle").addEventListener("click", () => {
 
 document.addEventListener("submit", (event) => {
   const formName = event.target.dataset?.form;
-  const formHandler = formName && (personalForms[formName] ?? rentalForms[formName]);
+  const formHandler = formName && (personalForms[formName] ?? rentalForms[formName] ?? platformForms[formName]);
   if (formHandler) {
     event.preventDefault();
     const form = event.target;
@@ -1394,6 +1689,11 @@ document.addEventListener("submit", (event) => {
       .finally(() => {
         if (submit?.isConnected) submit.disabled = false;
       });
+    return;
+  }
+  if (event.target.id === "costForecastForm") {
+    event.preventDefault();
+    submitCostForecast(event.target);
     return;
   }
   if (event.target.id === "energyGoalForm") {
@@ -1470,15 +1770,40 @@ document.addEventListener("keydown", (event) => {
 });
 
 setGameCallbacks({ render, toast, pageHead, stat, panel, language: getLanguage });
-if (readInviteFromHash()) currentPage = "join";
+// An invitation opened while signed out survives the landing-page login in this tab's sessionStorage.
+if (readInviteFromHash() || hasPendingInvite()) currentPage = "join";
 lastAccountKey = JSON.stringify([false, null, false, []]);
 onAccountChange((state) => {
+  const switchedAccount = lastObservedAuthUid !== null && state.uid !== lastObservedAuthUid;
+  lastObservedAuthUid = state.uid;
+  if (switchedAccount) {
+    // Remove the previous account's property context and DOM before new-user requests finish.
+    setWorkspace(null);
+    activeAccountTab = "personal";
+    if (!state.signedIn) {
+      window.location.assign("/landing/login.html");
+      return;
+    }
+    currentPage = "dashboard";
+    $("#content").innerHTML = `<p class="muted-note" role="status">Loading your account…</p>`;
+    $("#workspaceSwitcher").replaceChildren();
+    renderNavigation();
+    renderPageHeading();
+  }
   setGameUser(state.uid);
   setNotificationUser(state.uid);
   renderPageHeading();
   updateNotificationBadge();
   refreshWorkspaces({ force: false }).catch(() => toast("SmartWatts could not refresh your account workspace. Try again shortly."));
   restoreAccountLanguage().catch(() => toast("SmartWatts could not load your saved language preference."));
+});
+
+// The assistant can ask to switch scope (e.g. a bill saved in Personal while chatting in a property).
+// Only switching to the always-available Personal workspace is allowed from this event.
+window.addEventListener("smartwatts-request-workspace", (event) => {
+  if (event.detail?.type !== "personal") return;
+  setWorkspace(null);
+  navigate(workspaceHome.personal);
 });
 
 window.addEventListener("smartwatts-appliance-saved", (event) => {
@@ -1534,6 +1859,5 @@ loadSupportedLanguages()
       // Without Google Cloud Translation, offer every language with a local dictionary.
       detail: getSupportedLanguages(),
     }));
-    const message = error instanceof Error ? error.message : "Could not load supported languages.";
-    window.dispatchEvent(new CustomEvent("smartwatts-translation-error", { detail: message }));
+    // Cloud translation is optional; local dictionaries and English remain available.
   });

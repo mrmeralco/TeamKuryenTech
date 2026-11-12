@@ -60,13 +60,30 @@ def ok(response, status=200):
 def make_property(client, headers=OWNER, activate=True, name="Sunrise Apartments"):
     prop = ok(client.post("/api/rentals/properties", headers=headers, json={"name": name, "address": "1 Rizal St, Quezon City"}), 201)
     if activate:
-        ok(client.post(f"/api/rentals/admin/properties/{prop['id']}/subscription", headers=STAFF,
-                       json={"status": "active", "currentPeriodEnd": "2026-11-15T00:00:00+00:00"}))
+        activate_property(client, prop["id"], owner_headers=headers)
     return prop["id"]
+
+
+def activate_property(client, pid, owner_headers=OWNER, period_end="2026-11-15"):
+    """Owner requests activation; a platform administrator approves it as an administrative grant."""
+    current = ok(client.get(f"/api/platform/subscriptions/{pid}", headers=STAFF))
+    if current["status"] != "pending_activation":
+        ok(client.post(f"/api/rentals/properties/{pid}/subscription/request-activation", headers=owner_headers))
+        current = ok(client.get(f"/api/platform/subscriptions/{pid}", headers=STAFF))
+    return ok(client.post(f"/api/platform/subscriptions/{pid}/approve", headers=STAFF, json={
+        "confirm": True, "expectedVersion": current["version"], "activationSource": "administrative_grant",
+        "reason": "Test fixture grant approved by platform staff.", "periodEnd": period_end,
+    }))
 
 
 def base(pid):
     return f"/api/rentals/properties/{pid}"
+
+
+def publish(client, pid, statement_id, headers=OWNER):
+    """Draft → Reviewed → Published."""
+    ok(client.post(f"{base(pid)}/statements/{statement_id}/review", headers=headers))
+    return ok(client.post(f"{base(pid)}/statements/{statement_id}/finalize", headers=headers))
 
 
 def invite_tenant(client, pid, unit_id, tenant_headers=TENANT, move_in="2026-01-01", headers=OWNER):
@@ -120,20 +137,23 @@ def test_unit_limit_is_enforced_from_property_subscription(env):
 def test_inactive_and_expired_subscription_block_writes_but_keep_reads(env):
     client, clock, _ = env
     pid = make_property(client, activate=False)
-    assert client.post(f"{base(pid)}/units", headers=OWNER, json={"label": "1A"}).status_code == 402
+    # Draft setup is free: units can be configured, but operational workflows need activation.
+    draft_unit = ok(client.post(f"{base(pid)}/units", headers=OWNER, json={"label": "Draft 1"}), 201)
+    assert client.post(f"{base(pid)}/invitations", headers=OWNER, json={"role": "tenant", "unitId": draft_unit["id"]}).status_code == 402
     assert client.get(f"{base(pid)}/units", headers=OWNER).status_code == 200
     # Owners can request activation but cannot activate themselves.
     ok(client.post(f"{base(pid)}/subscription/request-activation", headers=OWNER))
-    assert client.post(f"/api/rentals/admin/properties/{pid}/subscription", headers=OWNER,
-                       json={"status": "active", "currentPeriodEnd": "2026-11-15T00:00:00+00:00"}).status_code == 403
-    ok(client.post(f"/api/rentals/admin/properties/{pid}/subscription", headers=STAFF,
-                   json={"status": "active", "currentPeriodEnd": "2026-11-15T00:00:00+00:00"}))
+    assert client.post(f"/api/platform/subscriptions/{pid}/approve", headers=OWNER, json={
+        "confirm": True, "expectedVersion": 1, "activationSource": "administrative_grant", "reason": "Trying to self-approve", "periodEnd": "2026-11-15",
+    }).status_code == 403
+    activate_property(client, pid)
     ok(client.post(f"{base(pid)}/units", headers=OWNER, json={"label": "1A"}), 201)
     clock.now += timedelta(days=40)
     sub = ok(client.get(f"{base(pid)}/subscription", headers=OWNER))
     assert sub["status"] == "expired" and sub["active"] is False and sub["paymentsEnabled"] is False
     assert client.post(f"{base(pid)}/units", headers=OWNER, json={"label": "1B"}).status_code == 402
-    assert len(ok(client.get(f"{base(pid)}/units", headers=OWNER))) == 1
+    assert sub["lifecycle"] == "expired"
+    assert len(ok(client.get(f"{base(pid)}/units", headers=OWNER))) == 2
 
 
 # ------------------------------------------------- invitations & members
@@ -285,6 +305,25 @@ def test_reading_validation_and_correction_history(env):
     assert client.post(f"{base(pid)}/readings/{first['id']}/corrections", headers=OWNER, json={"valueKwh": "1", "reason": "again!"}).status_code == 409
 
 
+def test_historical_records_filter_and_tenant_occupancy_privacy(env):
+    client, _, _ = env
+    pid, (u1, u2), main, (sub1, sub2) = submeter_property(client)
+    invite_tenant(client, pid, u1["id"], TENANT, move_in="2026-09-10")
+    invite_tenant(client, pid, u2["id"], TENANT2, move_in="2026-09-01")
+    reading(client, pid, sub1["id"], "2026-09-05", "10")  # before tenant occupancy
+    reading(client, pid, sub1["id"], "2026-09-12", "20")
+    reading(client, pid, sub2["id"], "2026-09-12", "30")
+    owner_page = ok(client.get(f"{base(pid)}/history", headers=OWNER, params={"type": "reading", "start": "2026-09-10", "end": "2026-09-12", "limit": 1}))
+    assert len(owner_page["records"]) == 1 and owner_page["nextCursor"] == "1"
+    assert owner_page["total"] == 2
+    tenant_page = ok(client.get(f"{base(pid)}/me/history", headers=TENANT, params={"type": "reading"}))
+    assert [(r["unitId"], r["date"]) for r in tenant_page["records"]] == [(u1["id"], "2026-09-12")]
+    assert client.get(f"{base(pid)}/history", headers=TENANT).status_code == 403
+    assert client.get(f"{base(pid)}/me/history", headers=TENANT2, params={"unitId": u1["id"]}).status_code == 404
+    assert client.get(f"{base(pid)}/history", headers=STRANGER).status_code == 404
+    assert client.get(f"{base(pid)}/history", headers=OWNER, params={"limit": 1000}).status_code == 422
+
+
 def test_submeter_statements_reconcile_finalize_and_tenant_sees_only_own(env):
     client, _, service = env
     pid, (u1, u2), main, (s1, s2) = submeter_property(client)
@@ -305,7 +344,7 @@ def test_submeter_statements_reconcile_finalize_and_tenant_sees_only_own(env):
     # Tenants see nothing until finalized.
     assert ok(client.get(f"{base(pid)}/me/statements", headers=TENANT)) == []
     for statement in statements:
-        ok(client.post(f"{base(pid)}/statements/{statement['id']}/finalize", headers=OWNER))
+        publish(client, pid, statement['id'])
     mine = ok(client.get(f"{base(pid)}/me/statements", headers=TENANT))
     assert len(mine) == 1 and mine[0]["totalCentavos"] == 180_600
     assert mine[0]["lines"][0]["chargeBasis"] == "private_submeter_consumption"
@@ -320,9 +359,13 @@ def test_submeter_statements_reconcile_finalize_and_tenant_sees_only_own(env):
     assert run2["version"] == 2
     new = [s for s in ok(client.get(f"{base(pid)}/statements", headers=OWNER)) if s["version"] == 2 and s["tenantUid"] == "tenant"][0]
     assert new["supersedesId"] == mine[0]["id"]
-    ok(client.post(f"{base(pid)}/statements/{new['id']}/finalize", headers=OWNER))
+    publish(client, pid, new['id'])
     old = service.store.get(f"properties/{pid}/statements", mine[0]["id"])
     assert old["status"] == "superseded" and old["totalCentavos"] == 180_600
+    tenant_history = ok(client.get(f"{base(pid)}/me/history", headers=TENANT, params={"type": "statement"}))
+    history_versions = {record["id"]: (record["status"], record["totalCentavos"]) for record in tenant_history["records"]}
+    assert history_versions[mine[0]["id"]] == ("superseded", 180_600)
+    assert history_versions[new["id"]] == ("finalized", new["totalCentavos"])
     assert ok(client.get(f"{base(pid)}/utility-bills/{bill['id']}/reconciliation", headers=OWNER))["version"] == 2
 
 
@@ -348,7 +391,7 @@ def test_move_out_and_move_in_produce_separate_submeter_statements(env):
     assert by_tenant["tenant"]["lines"][0]["wh"] == 100_000
     assert by_tenant["tenant2"]["lines"][0]["wh"] == 150_000
     for statement in by_tenant.values():
-        ok(client.post(f"{base(pid)}/statements/{statement['id']}/finalize", headers=OWNER))
+        publish(client, pid, statement['id'])
     # Former tenant keeps their own finalized statement but nothing else.
     assert len(ok(client.get(f"{base(pid)}/me/statements", headers=TENANT))) == 1
     assert client.get(f"{base(pid)}/me/unit", headers=TENANT).status_code == 404
@@ -414,7 +457,7 @@ def test_audit_log_records_privileged_actions_and_is_manager_only(env):
     unit = ok(client.post(f"{base(pid)}/units", headers=OWNER, json={"label": "1A"}), 201)
     invite_tenant(client, pid, unit["id"])
     actions = {log["action"] for log in ok(client.get(f"{base(pid)}/audit-logs", headers=OWNER))}
-    assert {"property.create", "subscription.platformUpdate", "unit.create", "invitation.create", "invitation.accept"} <= actions
+    assert {"property.create", "subscription.request", "subscription.approve", "unit.create", "invitation.create", "invitation.accept"} <= actions
     assert client.get(f"{base(pid)}/audit-logs", headers=TENANT).status_code == 403
 
 
@@ -492,7 +535,7 @@ def test_property_analytics_aggregates_billing_units_and_trends(env):
     assert len(statements) == 2
     # Finalize statement for u1
     s1_stmt = next(s for s in statements if s["unitId"] == u1["id"])
-    ok(client.post(f"{base(pid)}/statements/{s1_stmt['id']}/finalize", headers=OWNER))
+    publish(client, pid, s1_stmt['id'])
 
     analytics = ok(client.get(f"{base(pid)}/analytics", headers=OWNER))
     assert analytics["totalOfficialBilledCentavos"] == 300_000

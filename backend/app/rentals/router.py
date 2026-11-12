@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from firebase_admin.exceptions import FirebaseError
 from google.api_core.exceptions import GoogleAPICallError
 from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
@@ -77,9 +77,32 @@ def get_property(pid: str, user: Permanent, service: Service):
     return _run(service.get_property, user, pid)
 
 
+@router.post("/rentals/properties/{pid}/archive")
+def archive_property(pid: str, user: Permanent, service: Service, payload: Payload):
+    return _run(service.archive_property, user, pid, payload)
+
+
 @router.get("/rentals/properties/{pid}/analytics")
-def analytics(pid: str, user: Permanent, service: Service):
-    return _run(service.analytics, user, pid)
+def analytics(pid: str, user: Permanent, service: Service, from_: Annotated[str | None, Query(alias="from")] = None, to: str | None = None):
+    return _run(service.analytics, user, pid, from_, to)
+
+
+@router.get("/rentals/properties/{pid}/history")
+def property_history(pid: str, user: Permanent, service: Service,
+                     start: str | None = None, end: str | None = None, type: str | None = None,
+                     unitId: str | None = None, meterId: str | None = None,
+                     cursor: str | None = None, limit: int = 50):
+    return _run(service.historical_records, user, pid, start=start, end=end, record_type=type,
+                 unit_id=unitId, meter_id=meterId, cursor=cursor, limit=limit)
+
+
+@router.get("/rentals/properties/{pid}/me/history")
+def tenant_history(pid: str, user: Permanent, service: Service,
+                   start: str | None = None, end: str | None = None, type: str | None = None,
+                   unitId: str | None = None, meterId: str | None = None,
+                   cursor: str | None = None, limit: int = 50):
+    return _run(service.historical_records, user, pid, start=start, end=end, record_type=type,
+                 unit_id=unitId, meter_id=meterId, cursor=cursor, limit=limit, tenant_scope=True)
 
 
 @router.get("/rentals/properties/{pid}/units")
@@ -92,6 +115,16 @@ def create_unit(pid: str, user: Permanent, service: Service, payload: Payload):
     return _run(service.create_unit, user, pid, payload)
 
 
+@router.patch("/rentals/properties/{pid}/units/{unit_id}")
+def update_unit(pid: str, unit_id: str, user: Permanent, service: Service, payload: Payload):
+    return _run(service.update_unit, user, pid, unit_id, payload)
+
+
+@router.post("/rentals/properties/{pid}/units/{unit_id}/archive")
+def archive_unit(pid: str, unit_id: str, user: Permanent, service: Service, payload: Payload):
+    return _run(service.archive_unit, user, pid, unit_id, payload)
+
+
 @router.get("/rentals/properties/{pid}/meters")
 def list_meters(pid: str, user: Permanent, service: Service):
     return _run(service.list_meters, user, pid)
@@ -100,6 +133,11 @@ def list_meters(pid: str, user: Permanent, service: Service):
 @router.post("/rentals/properties/{pid}/meters", status_code=201)
 def create_meter(pid: str, user: Permanent, service: Service, payload: Payload):
     return _run(service.create_meter, user, pid, payload)
+
+
+@router.post("/rentals/properties/{pid}/meters/{meter_id}/retire")
+def retire_meter(pid: str, meter_id: str, user: Permanent, service: Service, payload: Payload):
+    return _run(service.retire_meter, user, pid, meter_id, payload)
 
 
 @router.post("/rentals/properties/{pid}/meter-assignments", status_code=201)
@@ -130,6 +168,27 @@ def record_reading(pid: str, user: Permanent, service: Service, payload: Payload
 @router.post("/rentals/properties/{pid}/readings/{reading_id}/corrections", status_code=201)
 def correct_reading(pid: str, reading_id: str, user: Permanent, service: Service, payload: Payload):
     return _run(service.correct_reading, user, pid, reading_id, payload)
+
+
+async def _read_document(request: Request) -> tuple[bytes, str]:
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(status_code=413, detail="Documents must be 10 MB or smaller.")
+    content = await request.body()
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    return content, content_type
+
+
+@router.put("/rentals/properties/{pid}/readings/{reading_id}/evidence")
+async def attach_reading_evidence(pid: str, reading_id: str, request: Request, user: Permanent, service: Service):
+    content, content_type = await _read_document(request)
+    return _run(service.attach_reading_evidence, user, pid, reading_id, content, content_type)
+
+
+@router.get("/rentals/properties/{pid}/readings/{reading_id}/evidence")
+def get_reading_evidence(pid: str, reading_id: str, user: Permanent, service: Service):
+    content, content_type = _run(service.get_reading_evidence, user, pid, reading_id)
+    return Response(content, media_type=content_type, headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/rentals/properties/{pid}/utility-bills")
@@ -171,6 +230,21 @@ def reconciliation(pid: str, bill_id: str, user: Permanent, service: Service):
 @router.get("/rentals/properties/{pid}/statements")
 def list_statements(pid: str, user: Permanent, service: Service):
     return _run(service.list_statements, user, pid)
+
+
+@router.post("/rentals/properties/{pid}/statements/{statement_id}/review")
+def review_statement(pid: str, statement_id: str, user: Permanent, service: Service):
+    return _run(service.review_statement, user, pid, statement_id)
+
+
+@router.get("/rentals/properties/{pid}/review-requests")
+def list_review_requests(pid: str, user: Permanent, service: Service):
+    return _run(service.list_review_requests, user, pid)
+
+
+@router.post("/rentals/properties/{pid}/review-requests/{request_id}/resolve")
+def resolve_review_request(pid: str, request_id: str, user: Permanent, service: Service, payload: Payload):
+    return _run(service.resolve_review_request, user, pid, request_id, payload)
 
 
 @router.post("/rentals/properties/{pid}/statements/{statement_id}/finalize")
@@ -233,6 +307,26 @@ def my_statements(pid: str, user: Permanent, service: Service):
     return _run(service.my_statements, user, pid)
 
 
+@router.post("/rentals/properties/{pid}/me/statements/{statement_id}/review-request", status_code=201)
+def request_statement_review(pid: str, statement_id: str, user: Permanent, service: Service, payload: Payload):
+    return _run(service.request_statement_review, user, pid, statement_id, payload)
+
+
+@router.get("/rentals/properties/{pid}/me/review-requests")
+def my_review_requests(pid: str, user: Permanent, service: Service):
+    return _run(service.my_review_requests, user, pid)
+
+
+@router.get("/rentals/notifications")
+def my_notifications(user: Permanent, service: Service):
+    return _run(service.my_notifications, user)
+
+
+@router.post("/rentals/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: str, user: Permanent, service: Service):
+    return _run(service.mark_notification_read, user, notification_id)
+
+
 @router.get("/rentals/properties/{pid}/me/meter-history")
 def my_meter_history(pid: str, user: Permanent, service: Service):
     return _run(service.my_meter_history, user, pid)
@@ -248,9 +342,25 @@ def request_activation(pid: str, user: Permanent, service: Service):
     return _run(service.request_activation, user, pid)
 
 
-@router.post("/rentals/admin/properties/{pid}/subscription")
-def platform_set_subscription(pid: str, user: Permanent, service: Service, payload: Payload):
-    return _run(service.platform_set_subscription, user, pid, payload)
+# ---- Platform administration (verified platformAdmin claim only; enforced in the service) ----
+@router.get("/platform/me")
+def platform_me(user: User, service: Service):
+    return _run(service.platform_me, user)
+
+
+@router.get("/platform/subscriptions")
+def platform_list_subscriptions(user: Permanent, service: Service, status: str | None = None):
+    return _run(service.platform_list_subscriptions, user, status)
+
+
+@router.get("/platform/subscriptions/{pid}")
+def platform_get_subscription(pid: str, user: Permanent, service: Service):
+    return _run(service.platform_get_subscription, user, pid)
+
+
+@router.post("/platform/subscriptions/{pid}/{action}")
+def platform_subscription_action(pid: str, action: str, user: Permanent, service: Service, payload: Payload):
+    return _run(service.platform_subscription_action, user, pid, action, payload)
 
 
 @router.get("/rentals/properties/{pid}/audit-logs")

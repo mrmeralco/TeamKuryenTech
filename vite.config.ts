@@ -45,6 +45,10 @@ function landingRoutes(): Plugin {
       req.url = LANDING_PAGES[path] + qs;
       return next();
     }
+    if (path === "/nfc" || path.startsWith("/nfc/")) {
+      req.url = `/nfc.html${qs}`;
+      return next();
+    }
     if (path === "/dashboard" || path === "/dashboard/") {
       if (path.endsWith("/")) {
         // Keep the URL slash-less so the dashboard's relative CSS paths resolve from "/".

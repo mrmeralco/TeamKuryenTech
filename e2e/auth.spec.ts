@@ -94,6 +94,51 @@ test("email registration verifies by OTP, persists the session and personal reco
     { name: "Landing Test Refrigerator", testedKwhMonth: 26.1 },
   ]);
 
+  await page.locator('#navigation [data-page="account"]').click();
+  await expect(page.locator('[data-account-tab="personal"]')).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#account-email")).toHaveValue(email);
+  await expect(page.locator("#account-email")).toHaveAttribute("readonly", "");
+  await expect(page.locator("#account-first-name")).not.toHaveValue("Rean Justine");
+  await page.locator("#account-first-name").fill("Mina");
+  await page.locator('[data-account-tab="service"]').click();
+  await page.locator('[data-account-tab="personal"]').focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator('[data-account-tab="service"]')).toHaveAttribute("aria-selected", "true");
+  await page.locator('[data-account-tab="personal"]').click();
+  await expect(page.locator("#account-first-name")).toHaveValue("Mina");
+  await page.locator("#account-last-name").fill("Customer");
+  await page.locator('[data-form="account-profile-save"] button[type="submit"]').click();
+  await expect(page.getByText("Personal information saved to your account.")).toBeVisible();
+
+  await page.locator('[data-account-tab="service"]').click();
+  await expect(page.locator('[data-account-panel="service"]')).toBeVisible();
+  await page.locator('[data-form="account-service-save"] [name="serviceProvider"]').fill("Sample Electric Cooperative");
+  await page.locator('[data-form="account-service-save"] [name="serviceAddress"]').fill("7 Emulator Lane");
+  await page.locator('[data-form="account-service-save"] [name="utilityAccountNumber"]').fill("TEST-ACCT-100");
+  await page.locator('[data-form="account-service-save"] [name="rateCategory"]').fill("Residential (self-reported)");
+  await page.locator('[data-form="account-service-save"] button[type="submit"]').click();
+  await expect(page.getByText("Service details saved. These entries are not utility-provider verified.")).toBeVisible();
+
+  await page.locator('[data-account-tab="security"]').click();
+  await expect(page.locator('[data-account-panel="security"]')).toContainText("Email / Password");
+  await expect(page.locator('[data-account-panel="security"]')).toContainText("Email verified");
+  await page.locator('[data-account-tab="preferences"]').click();
+  await expect(page.locator('[data-account-panel="preferences"]')).toBeVisible();
+  await page.locator('[data-form="account-preferences-save"] [name="preferredLanguage"]').selectOption("tl");
+  await page.locator('[data-form="account-preferences-save"] [name="theme"]').selectOption("dark");
+  await page.locator('[data-form="account-preferences-save"] button[type="submit"]').click();
+  await expect(page.locator("body")).toHaveClass(/theme-dark/);
+
+  await page.reload();
+  await expect(page.locator("#navigation")).toBeVisible();
+  await page.locator('#navigation [data-page="account"]').click();
+  await expect(page.locator("#account-first-name")).toHaveValue("Mina");
+  await expect(page.locator("#account-last-name")).toHaveValue("Customer");
+  await page.locator('[data-account-tab="service"]').click();
+  await expect(page.locator('[data-form="account-service-save"] [name="utilityAccountNumber"]')).toHaveValue("TEST-ACCT-100");
+  await page.locator('[data-account-tab="preferences"]').click();
+  await expect(page.locator('[data-form="account-preferences-save"] [name="preferredLanguage"]')).toHaveValue("tl");
+
   await page.locator("#logoutButton").click();
   await expect(page).toHaveURL(/\/$/);
   await page.goto("/login");

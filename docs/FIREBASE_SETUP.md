@@ -59,6 +59,20 @@ If inspection finds other collections with real data, stop and design a migratio
 5. Backend: set `FIREBASE_PROJECT_ID=smartwatts-266cc` and provide a service account through `GOOGLE_APPLICATION_CREDENTIALS` (a file path outside the repo; `*.service-account.json` is git-ignored). Roles needed: Firebase Authentication Admin (verify tokens), Cloud Datastore User (Firestore), and Storage Object Admin only if bill documents are stored.
 6. Staff activation uses the custom claim `platformAdmin: true`, set with the Admin SDK for specific staff accounts.
 
+### One-time SmartWatts Platform Administrator provisioning
+
+Use an operator workstation with authorized Application Default Credentials (ADC); no service-account key is needed. The operator needs Firebase Authentication user read access (`firebaseauth.users.get`) and, only for an approved grant/revoke, `firebaseauth.users.update`. Use a least-privilege custom role containing those permissions (or an organization-approved Firebase Authentication admin role). The grant/revoke updates the complete custom-claims map, so the tool re-reads and merges existing claims immediately before writing.
+
+From the repository root, run the script with the pinned project/account constants shown by `--help`/source. Read-only by default:
+
+```bash
+gcloud auth application-default print-access-token >/dev/null  # availability check; token is discarded
+backend/.venv/bin/python scripts/provision-platform-admin.py --dry-run
+backend/.venv/bin/python scripts/provision-platform-admin.py --verify
+```
+
+For an approved operation, use `--grant` or `--revoke`; each requires typing the exact project, email, UID, and target claim value interactively. Never pipe confirmation or put credentials in command arguments. Re-run `--verify` afterward. The script fails closed on project, UID/email, claim-race, or post-write mismatch. After granting, the staff member must sign out and back in, then force-refresh the Firebase ID token.
+
 ## 6. Production deployment (needs explicit approval each time)
 
 ```bash

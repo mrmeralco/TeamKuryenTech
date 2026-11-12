@@ -9,6 +9,7 @@
  */
 import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import { auth } from "./firebase";
+import { captureInviteFromHash, PENDING_INVITE_KEY } from "./pendingInvite";
 
 const LANDING_URL = "/";
 
@@ -32,7 +33,15 @@ function initials(user: User): string {
 }
 
 function leave(): void {
-  window.location.replace(LANDING_URL);
+  // Carry a pending rental invitation in the landing URL fragment (never sent to a server).
+  // Writing sessionStorage right before an immediate redirect is not reliable on a tab's first load.
+  let invite: string | null = null;
+  try {
+    invite = sessionStorage.getItem(PENDING_INVITE_KEY);
+  } catch {
+    invite = null;
+  }
+  window.location.replace(invite ? `${LANDING_URL}#join=${invite}` : LANDING_URL);
 }
 
 export async function logout(): Promise<void> {
@@ -64,6 +73,8 @@ function showUser(user: User): void {
 }
 
 async function start(): Promise<void> {
+  // Runs before any redirect: keep a rental invitation link for after sign-in.
+  captureInviteFromHash();
   const firebaseAuth = auth;
   document.getElementById("logoutButton")?.addEventListener("click", () => {
     logout().catch(() => leave());
