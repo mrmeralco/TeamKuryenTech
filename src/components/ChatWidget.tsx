@@ -1,11 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Bot, Languages, MessageCircle, Send, X } from "lucide-react";
 import { Button } from "./ui/button";
-import { getGuestIdToken } from "../lib/apiAuth";
+import { getIdToken } from "../lib/apiAuth";
 import { translateTexts, type TranslationLanguage } from "../lib/translationClient";
+import { buildAdvisorContext } from "../lib/personal/advisorContext";
+import { STATIC_CHAT_LABELS, STATIC_LANGUAGES } from "../lib/i18n/dictionaries";
 
 type Language = string;
-type Message = { role: "user" | "assistant"; text: string };
+type Grounding = { validated: boolean; facts: string[]; assumptions: string[] };
+type Message = { role: "user" | "assistant"; text: string; grounding?: Grounding };
 type ChatCopy = {
   title: string;
   subtitle: string;
@@ -20,6 +23,10 @@ type ChatCopy = {
   closeChat: string;
   open: string;
   close: string;
+  useMyData: string;
+  figuresVerified: string;
+  figuresWithheld: string;
+  showFigures: string;
 };
 
 const labels = {
@@ -37,6 +44,10 @@ const labels = {
     closeChat: "Close chat",
     open: "Chat with us",
     close: "Close",
+    useMyData: "Use my own appliance and bill figures (never shared with landlords)",
+    figuresVerified: "Figures checked against SmartWatts calculations",
+    figuresWithheld: "The AI reply contained unverified figures, so SmartWatts shows its own calculation instead.",
+    showFigures: "Calculated figures and assumptions",
   },
   tl: {
     title: "Katulong ng SmartWatts",
@@ -52,12 +63,19 @@ const labels = {
     closeChat: "Isara ang chat",
     open: "Makipag-chat",
     close: "Isara",
+    useMyData: "Gamitin ang sarili kong datos ng appliance at bill (hindi ibinabahagi sa landlord)",
+    figuresVerified: "Sinuri ang mga numero laban sa kalkulasyon ng SmartWatts",
+    figuresWithheld: "May hindi beripikadong numero ang sagot ng AI, kaya ipinapakita ng SmartWatts ang sarili nitong kalkulasyon.",
+    showFigures: "Mga kinalkulang numero at palagay",
   },
 } satisfies Record<"en" | "tl", ChatCopy>;
+
+const localLabels: Record<string, ChatCopy> = { ...(STATIC_CHAT_LABELS as Record<string, ChatCopy>), ...labels };
 
 const defaultLanguages: TranslationLanguage[] = [
   { code: "en", name: "English" },
   { code: "tl", name: "Tagalog" },
+  ...STATIC_LANGUAGES,
 ];
 
 function getSavedLanguage(): Language {
@@ -75,10 +93,11 @@ export default function ChatWidget() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [useMyData, setUseMyData] = useState(true);
   const [availableLanguages, setAvailableLanguages] = useState(defaultLanguages);
   const [remoteLabels, setRemoteLabels] = useState<{ language: string; copy: ChatCopy } | null>(null);
-  const baseCopy = labels[language as keyof typeof labels] ?? labels.en;
-  const copy = language === "en" || language === "tl"
+  const baseCopy = localLabels[language] ?? labels.en;
+  const copy = localLabels[language]
     ? baseCopy
     : remoteLabels?.language === language ? remoteLabels.copy : baseCopy;
   const conversation = messages.length ? messages : [{ role: "assistant" as const, text: copy.greeting }];
@@ -101,7 +120,7 @@ export default function ChatWidget() {
   }, []);
 
   useEffect(() => {
-    if (language === "en" || language === "tl") {
+    if (localLabels[language]) {
       setRemoteLabels(null);
       return;
     }
@@ -140,15 +159,24 @@ export default function ChatWidget() {
     setText("");
     setBusy(true);
     try {
-      const token = await getGuestIdToken();
+      const token = await getIdToken();
+      const context = useMyData ? await buildAdvisorContext().catch(() => null) : null;
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ language, messages: nextMessages.slice(-12) }),
+        body: JSON.stringify({
+          language,
+          messages: nextMessages.slice(-12).map(({ role, text: messageText }) => ({ role, text: messageText })),
+          ...(context ? { context } : {}),
+        }),
       });
-      const data: { reply?: string; detail?: string } = await response.json();
+      const data: { reply?: string; detail?: string; validated?: boolean; facts?: string[]; assumptions?: string[] } = await response.json();
       if (!response.ok || !data.reply) throw new Error(data.detail ?? copy.error);
-      setMessages((current) => [...current, { role: "assistant", text: data.reply! }]);
+      setMessages((current) => [...current, {
+        role: "assistant",
+        text: data.reply!,
+        grounding: { validated: data.validated !== false, facts: data.facts ?? [], assumptions: data.assumptions ?? [] },
+      }]);
     } catch (error) {
       setMessages((current) => [...current, {
         role: "assistant",
@@ -198,11 +226,26 @@ export default function ChatWidget() {
             {conversation.map((message, index) => (
               <div key={`${message.role}-${index}`} className={`max-w-[88%] whitespace-pre-wrap rounded-2xl px-3 py-2.5 text-sm leading-relaxed ${message.role === "user" ? "ml-auto bg-[#fff0bf] text-slate-800" : "bg-white text-slate-700 shadow-sm"}`}>
                 {message.text}
+                {message.grounding && (message.grounding.facts.length > 0 || !message.grounding.validated) && (
+                  <div className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
+                    <p>{message.grounding.validated ? `✓ ${copy.figuresVerified}` : `⚠ ${copy.figuresWithheld}`}</p>
+                    {message.grounding.facts.length > 0 && (
+                      <details>
+                        <summary className="cursor-pointer">{copy.showFigures}</summary>
+                        <ul className="mt-1 list-disc pl-4">{[...message.grounding.facts, ...message.grounding.assumptions].map((item) => <li key={item}>{item}</li>)}</ul>
+                      </details>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             {busy && <div className="w-fit rounded-2xl bg-white px-3 py-2 text-sm text-slate-500">{copy.thinking}</div>}
           </div>
-          <form onSubmit={sendMessage} className="flex items-end gap-2 border-t border-[#fff4cc] p-3">
+          <label className="flex items-start gap-2 border-t border-[#fff4cc] px-3 pt-2 text-[11px] text-slate-600">
+            <input type="checkbox" checked={useMyData} onChange={(event) => setUseMyData(event.target.checked)} className="mt-0.5" />
+            <span>{copy.useMyData}</span>
+          </label>
+          <form onSubmit={sendMessage} className="flex items-end gap-2 p-3">
             <label className="sr-only" htmlFor="chat-message">{copy.messageLabel}</label>
             <textarea id="chat-message" value={text} onChange={(event) => setText(event.target.value)} placeholder={copy.placeholder} maxLength={2000} rows={1} className="max-h-24 min-h-10 flex-1 resize-y rounded-xl border border-[#ffc700] px-3 py-2 text-sm outline-none focus:border-[#ff7a00] focus:ring-2 focus:ring-[#fff0bf]" />
             <Button size="icon" type="submit" disabled={busy || !text.trim()} aria-label={copy.send}><Send size={17} /></Button>

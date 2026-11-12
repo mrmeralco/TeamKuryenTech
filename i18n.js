@@ -1,10 +1,17 @@
 import { fetchSupportedLanguages as fetchProviderLanguages, translateTexts } from "./src/lib/translationClient.ts";
+import { LOCAL_ONLY_LANGUAGES, STATIC_DICTIONARIES, STATIC_LANGUAGES } from "./src/lib/i18n/dictionaries.ts";
 
 const LANGUAGE_KEY = "smartwatts-language";
 const DEFAULT_LANGUAGES = [
   { code: "en", name: "English" },
   { code: "tl", name: "Tagalog" },
+  ...STATIC_LANGUAGES,
 ];
+// Languages with a local dictionary: remote translation is only used for strings they lack.
+const hasLocalDictionary = (language) => language === "tl" || Boolean(STATIC_DICTIONARIES[language]);
+// Whether a string still needs Google Cloud Translation for this language.
+const needsRemote = (language, original, local) =>
+  language !== "en" && !LOCAL_ONLY_LANGUAGES.has(language) && Boolean(original) && (!hasLocalDictionary(language) || local.trim() === original.trim());
 let supportedLanguages = DEFAULT_LANGUAGES;
 let activeLanguage = null;
 let translationRevision = 0;
@@ -12,6 +19,74 @@ const translatedCache = new Map();
 const queuedTranslations = new Map();
 let translationFlushTimer = null;
 const translations = {
+  "Consumption Calendar": "Kalendaryo ng Konsumo",
+  "Meralco Business Centers": "Mga Meralco Business Center",
+  "Save plan": "I-save ang plano",
+  "Get directions": "Kumuha ng direksiyon",
+  "Find a Business Center": "Maghanap ng Business Center",
+  "Not published": "Hindi nakalathala",
+  "Branch details": "Detalye ng sangay",
+  "Operating hours": "Oras ng operasyon",
+  "Address": "Address",
+  "Name": "Pangalan",
+  "Category": "Kategorya",
+  "Power (watts)": "Lakas (watts)",
+  "Quantity": "Dami",
+  "Hours used per day": "Oras ng paggamit kada araw",
+  "Days used per week": "Araw ng paggamit kada linggo",
+  "Period start": "Simula ng panahon",
+  "Period end": "Katapusan ng panahon",
+  "Billed kWh": "Siningil na kWh",
+  "Total current charges (₱)": "Kabuuang singil ngayong buwan (₱)",
+  "Your rate (₱ per kWh)": "Iyong rate (₱ kada kWh)",
+  "Loading…": "Naglo-load…",
+  "Branch, city, or province": "Sangay, lungsod, o lalawigan",
+  "Province / area": "Lalawigan / lugar",
+  "All areas": "Lahat ng lugar",
+  "Search": "Maghanap",
+  "Usage Patterns": "Mga Pattern ng Konsumo",
+  "Patterns": "Pattern",
+  "My Appliances": "Aking mga Appliance",
+  "Savings Simulator": "Simulator ng Pagtitipid",
+  "Bill Upload & History": "Pag-upload at Kasaysayan ng Bill",
+  "Plans": "Mga Plano",
+  "ACCOUNT": "ACCOUNT",
+  "Workspace": "Workspace",
+  "PROPERTY": "ARI-ARIAN",
+  "MY RENTAL": "AKING INUUPAHAN",
+  "MY PRIVATE ENERGY": "AKING PRIBADONG ENERHIYA",
+  "Overview": "Pangkalahatang-tanaw",
+  "Units & Tenants": "Mga Unit at Nangungupahan",
+  "Meters & Allocation": "Mga Metro at Paghahati",
+  "Meter Readings": "Mga Pagbasa ng Metro",
+  "Utility Bills": "Mga Bill ng Kuryente",
+  "Tenant Statements": "Mga Statement ng Nangungupahan",
+  "Subscription": "Subskripsyon",
+  "Audit Log": "Talaan ng Audit",
+  "My Statements": "Aking mga Statement",
+  "My Meter History": "Kasaysayan ng Aking Metro",
+  "Sample data": "Sample na datos",
+  "Estimate": "Tantiya",
+  "Official utility bill": "Opisyal na bill ng kuryente",
+  "Measured · utility meter": "Nasukat · metro ng utility",
+  "Measured · private submeter": "Nasukat · pribadong submetro",
+  "Not individually measured": "Hindi indibidwal na nasukat",
+  "Allocation (agreed share)": "Paghahati (napagkasunduang bahagi)",
+  "Typical Load": "Karaniwang Load",
+  "Usage Profile": "Profile ng Konsumo",
+  "Sign-in & security": "Pag-sign in at seguridad",
+  "Create account": "Gumawa ng account",
+  "Sign in": "Mag-sign in",
+  "Sign out": "Mag-sign out",
+  "Add an appliance": "Magdagdag ng appliance",
+  "Save appliance": "I-save ang appliance",
+  "Registered appliances": "Mga nakarehistrong appliance",
+  "Estimated monthly usage": "Tinantiyang buwanang konsumo",
+  "Simulate": "I-simulate",
+  "Save bill": "I-save ang bill",
+  "Billing history": "Kasaysayan ng bill",
+  "SmartWatts plans": "Mga plano ng SmartWatts",
+  "Tenant billing workflows require legal and regulatory review before production use. SmartWatts does not collect payments, disconnect service, or certify compliance.": "Kailangang suriin ng abogado at ng mga regulator ang proseso ng paniningil sa nangungupahan bago gamitin nang totoo. Hindi naniningil ng bayad, hindi pumuputol ng serbisyo, at hindi nagpapatunay ng pagsunod sa regulasyon ang SmartWatts.",
   "Dashboard": "Buod",
   "Real-time Monitor": "Real-time na Monitor",
   "Usage History": "Kasaysayan ng Konsumo",
@@ -454,7 +529,8 @@ export function getLanguage() {
 
 export async function loadSupportedLanguages() {
   const languages = await fetchProviderLanguages();
-  const uniqueLanguages = [...new Map(languages.map((language) => [language.code, language])).values()];
+  // Locally supported languages are always offered, with their own display names.
+  const uniqueLanguages = [...new Map([...languages, ...DEFAULT_LANGUAGES].map((language) => [language.code, language])).values()];
   if (!uniqueLanguages.some(({ code }) => code === "en")) {
     throw new Error("Google Cloud Translation did not include English in its language list.");
   }
@@ -492,7 +568,10 @@ export function translateText(value, language = getLanguage()) {
   if (!content || language === "en") return value;
   const cached = translatedCache.get(`${language}\u0000${content}`);
   if (cached) return `${leading}${cached}${trailing}`;
-  if (language !== "tl") return value;
+  if (language !== "tl") {
+    const local = STATIC_DICTIONARIES[language]?.[content];
+    return local ? `${leading}${local}${trailing}` : value;
+  }
   let translated = translations[content];
 
   if (!translated) {
@@ -636,13 +715,13 @@ export function translateTree(root, language = getLanguage()) {
   let node;
   while ((node = walker.nextNode())) {
     const parent = node.parentElement;
-    if (!parent || parent.closest("#chat-root, script, style")) continue;
+    if (!parent || parent.closest("#chat-root, script, style, [translate='no']")) continue;
     if (!originalText.has(node)) originalText.set(node, node.nodeValue);
     const original = originalText.get(node).trim();
     const localValue = translateText(originalText.get(node), language);
     node.nodeValue = localValue;
     const cached = translatedCache.get(`${language}\u0000${original}`);
-    if (language !== "en" && original && (language !== "tl" || localValue.trim() === original)) {
+    if (needsRemote(language, original, localValue)) {
       if (cached) node.nodeValue = node.nodeValue.replace(original, cached);
       else queueTranslation(language, revision, original, (result) => {
         if (node.isConnected) node.nodeValue = `${node.nodeValue.match(/^\s*/)[0]}${result}${node.nodeValue.match(/\s*$/)[0]}`;
@@ -652,7 +731,7 @@ export function translateTree(root, language = getLanguage()) {
 
   const translatedAttributes = ["aria-label", "placeholder", "title", "value"];
   root.querySelectorAll("*").forEach((element) => {
-    if (element.closest("#chat-root, script, style")) return;
+    if (element.closest("#chat-root, script, style, [translate='no']")) return;
     let originals = originalAttributes.get(element);
     if (!originals) {
       originals = new Map();
@@ -660,12 +739,15 @@ export function translateTree(root, language = getLanguage()) {
     }
     translatedAttributes.forEach((attribute) => {
       if (!element.hasAttribute(attribute)) return;
+      // A hidden input's value attribute IS its data (e.g. labelType, source). Rewriting the
+      // attribute resets the value, so never translate it.
+      if (attribute === "value" && element.matches?.('input[type="hidden"]')) return;
       const isDynamicThemeLabel = element.id === "themeToggle" && (attribute === "aria-label" || attribute === "title");
       if (!isDynamicThemeLabel && !originals.has(attribute)) originals.set(attribute, element.getAttribute(attribute));
       const original = isDynamicThemeLabel ? element.getAttribute(attribute) : originals.get(attribute);
       const translated = translateText(original, language);
       element.setAttribute(attribute, translated);
-      if (language !== "en" && original && (language !== "tl" || translated.trim() === original.trim())) {
+      if (needsRemote(language, original?.trim(), translated)) {
         const cached = translatedCache.get(`${language}\u0000${original.trim()}`);
         if (cached) element.setAttribute(attribute, `${original.match(/^\s*/)[0]}${cached}${original.match(/\s*$/)[0]}`);
         else queueTranslation(language, revision, original.trim(), (result) => {

@@ -1,0 +1,15 @@
+rules_version = '2';
+
+// SmartWatts does not upload files directly from browsers.
+// - Personal bill OCR runs locally in the browser; images are not uploaded.
+// - Official rental utility-bill documents are uploaded through the FastAPI
+//   backend, which checks property membership and role before writing with
+//   the Admin SDK.
+// Direct client access to Cloud Storage is therefore denied entirely.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
