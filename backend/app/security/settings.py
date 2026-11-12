@@ -58,6 +58,8 @@ class SecuritySettings:
     cron_key_sha256: str
     # Browser challenge + API cookie requirement. Always on in production; opt-in elsewhere (tests, local checks).
     shield: bool
+    # Per-IP rate limits. Always on in production; opt-in elsewhere (SMARTWATTS_RATE_LIMITS=1).
+    rate_limits: bool
     attack_mode_forced: bool
     # Header the hosting platform sets with the real client IP (never a raw client-supplied X-Forwarded-For).
     client_ip_header: str
@@ -98,8 +100,11 @@ def load_security_settings(env: Mapping[str, str] | None = None) -> SecuritySett
     if cron_hash and (len(cron_hash) != 64 or any(c not in "0123456789abcdef" for c in cron_hash)):
         raise MissingSecretError("CRON_API_KEY_SHA256 must be the 64-character hex SHA-256 of the cron key.")
 
-    shield_flag = env.get("SMARTWATTS_SHIELD", "").strip().lower()
-    shield = production if shield_flag == "" else shield_flag in {"1", "true", "on", "yes"}
+    def flag(name: str) -> bool:
+        value = env.get(name, "").strip().lower()
+        return production if value == "" else value in {"1", "true", "on", "yes"}
+
+    shield = flag("SMARTWATTS_SHIELD")
     default_ip_header = "x-vercel-forwarded-for" if env.get("VERCEL") else ""
 
     # The deployment's own Vercel URLs (system env vars) are always accepted, so preview deployments keep working.
@@ -115,6 +120,7 @@ def load_security_settings(env: Mapping[str, str] | None = None) -> SecuritySett
         upstash_token=env.get("UPSTASH_REDIS_REST_TOKEN", "").strip(),
         cron_key_sha256=cron_hash,
         shield=shield,
+        rate_limits=flag("SMARTWATTS_RATE_LIMITS"),
         attack_mode_forced=env.get("ATTACK_MODE", "").strip() == "1",
         client_ip_header=(env.get("TRUSTED_CLIENT_IP_HEADER", "").strip().lower() or default_ip_header),
     )

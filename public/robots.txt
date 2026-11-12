@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /private-data/
+Disallow: /backup-db/
+Disallow: /admin-api/
+Disallow: /internal-api/
+Disallow: /db-dump/
