@@ -68,3 +68,37 @@ Playwright may require `npx playwright install chromium` on a new machine.
 - Five claimable energy challenges, Watts points, streaks, levels, and eight locally saved badges
 
 Electricity usage, bills, appliance breakdowns, and challenges are sample/demo values unless explicitly saved by a signed-in guest. This is not an official utility service and does not process payments.
+
+## Two-tier product (branch `feature/two-tier-business-model`)
+
+- **Tier 1 — SmartWatts Personal (free forever):** bill upload with in-browser OCR, appliance inventory and label scanner, savings simulator with a deterministic billing engine, grounded AI advisor, consumption calendar.
+- **Tier 2 — SmartWatts Rentals (proposed ₱299 per property per month, up to 10 units):** properties, units, QR/NFC tenant invitations, meters, readings, official bills, tenant statements. Tenants never pay SmartWatts. Online payment is not implemented; staff activate subscriptions manually.
+- There is no Tier 3 and no IoT hardware.
+
+Tenant billing workflows require legal and regulatory review before production use.
+
+### Extra environment variables
+
+| Variable | Purpose |
+|---|---|
+| `VITE_MAPBOX_ACCESS_TOKEN` | Optional public (`pk.*`) Mapbox token for the Business Center map. Restrict it to your domains. |
+| `VITE_USE_FIREBASE_EMULATORS` | `true` to use the local Firebase emulators (tests). |
+| `FIREBASE_STORAGE_BUCKET` | Optional bucket for rental bill documents (backend only). |
+| `RENTALS_PRICE_CENTAVOS`, `RENTALS_UNIT_LIMIT`, `RENTALS_TRIAL_DAYS` | Rentals plan price, unit limit, and optional development trial (defaults 29900, 10, 0). |
+
+### Checks
+
+```bash
+npm run typecheck          # TypeScript
+npm test                   # frontend unit tests
+npm run test:backend       # FastAPI tests
+npm run build              # production build
+npm run test:e2e           # browser tests, demo mode, no Mapbox token
+# The next four need Java 11+ (Firebase emulators):
+npm run test:rules
+npm run test:backend:emulator
+npm run test:e2e:rentals
+npm run test:e2e:mapbox    # needs a real Mapbox token in .env
+```
+
+See `docs/BUSINESS_CENTERS.md` for the Business Center data source and refresh steps.

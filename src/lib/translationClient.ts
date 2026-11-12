@@ -1,4 +1,4 @@
-import { getGuestIdToken } from "./apiAuth";
+import { getIdToken } from "./apiAuth";
 
 export type TranslationLanguage = {
   code: string;
@@ -6,7 +6,7 @@ export type TranslationLanguage = {
 };
 
 async function postTranslationRequest<T>(path: string, body?: unknown): Promise<T> {
-  const token = await getGuestIdToken();
+  const token = await getIdToken();
   const response = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
     headers: {

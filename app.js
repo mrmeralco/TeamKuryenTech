@@ -9,23 +9,35 @@ import {
   rewardsPage,
   setGameCallbacks,
 } from "./game.js";
-import { getLanguage, loadSupportedLanguages, setLanguage, translateText, translateTree } from "./i18n.js";
+import { getLanguage, getSupportedLanguages, loadSupportedLanguages, setLanguage, translateText, translateTree } from "./i18n.js";
+import {
+  handleApplianceLabelScan, handlePersonalBillOcr, personalActions, personalForms, personalLoaders, personalPages, readInviteFromHash,
+} from "./personal.js";
+import { handleRentalOcr, rentalActions, rentalForms, rentalPages } from "./rentals.js";
+import { handleLocatorInput, locatorActions, locatorPages } from "./locator.js";
+import { calendarActions, calendarPages } from "./calendar-view.js";
+import { getWorkspace, loadWorkspaces, setWorkspace, workspaceOptions } from "./workspace.js";
+import { currentAccount, onAccountChange } from "./src/lib/account.ts";
+import { escapeHtml } from "./src/lib/format.ts";
 
 // Navigation and screen copy
-const navigationGroups = [
+// Tier 1 — SmartWatts Personal (free forever)
+const personalNavigation = [
   {
     label: "MONITOR",
     items: [
       ["dashboard", "layout-dashboard", "Dashboard"],
-      ["realtime", "activity", "Real-time Monitor"],
+      ["realtime", "activity", "Usage Patterns"],
       ["history", "history", "Usage History"],
+      ["calendar", "clock", "Consumption Calendar"],
       ["breakdown", "chart-no-axes-column-increasing", "Analytics"],
-      ["devices", "plug-zap", "Device Monitor"],
+      ["devices", "plug-zap", "My Appliances"],
     ],
   },
   {
     label: "SAVE & EARN",
     items: [
+      ["simulator", "trending-down", "Savings Simulator"],
       ["goals", "target", "Energy Goals"],
       ["rewards", "trophy", "Rewards & Badges"],
     ],
@@ -33,16 +45,18 @@ const navigationGroups = [
   {
     label: "BILLING",
     items: [
+      ["bills", "receipt-text", "Bill Upload & History"],
       ["billing", "credit-card", "Billing & Payments"],
-      ["bills", "receipt-text", "Bill History"],
       ["rates", "badge-dollar-sign", "Rates Overview"],
     ],
   },
   {
-    label: "SETTINGS",
+    label: "ACCOUNT",
     items: [
-      ["notifications", "bell", "Notifications"],
+      ["plans", "badge-dollar-sign", "Plans"],
+      ["rentals-start", "users-round", "SmartWatts Rentals"],
       ["account", "user-round-cog", "Account Settings"],
+      ["notifications", "bell", "Notifications"],
       ["support", "message-circle-question", "Help & Support"],
     ],
   },
@@ -52,22 +66,84 @@ const navigationGroups = [
   },
 ];
 
+// Tier 2 — SmartWatts Rentals, property owner or authorized administrator
+const ownerNavigation = [
+  {
+    label: "PROPERTY",
+    items: [
+      ["rental-overview", "layout-dashboard", "Overview"],
+      ["rental-units", "users-round", "Units & Tenants"],
+      ["rental-meters", "gauge", "Meters & Allocation"],
+      ["rental-readings", "activity", "Meter Readings"],
+      ["rental-bills", "receipt-text", "Utility Bills"],
+      ["rental-statements", "receipt", "Tenant Statements"],
+      ["rental-subscription", "credit-card", "Subscription"],
+      ["rental-audit", "history", "Audit Log"],
+    ],
+  },
+  {
+    label: "ACCOUNT",
+    items: [
+      ["account", "user-round-cog", "Account Settings"],
+      ["support", "message-circle-question", "Help & Support"],
+    ],
+  },
+];
+
+// Tier 2 — SmartWatts Rentals, tenant (no SmartWatts fee for tenants)
+const tenantNavigation = [
+  {
+    label: "MY RENTAL",
+    items: [
+      ["tenant-statements", "receipt-text", "My Statements"],
+      ["tenant-meters", "gauge", "My Meter History"],
+    ],
+  },
+  {
+    label: "MY PRIVATE ENERGY",
+    items: [
+      ["devices", "plug-zap", "My Appliances"],
+      ["simulator", "trending-down", "Savings Simulator"],
+      ["calendar", "clock", "Consumption Calendar"],
+      ["goals", "target", "Energy Goals"],
+    ],
+  },
+  {
+    label: "ACCOUNT",
+    items: [
+      ["account", "user-round-cog", "Account Settings"],
+      ["support", "message-circle-question", "Help & Support"],
+    ],
+  },
+];
+
+const modulePages = { ...personalPages, ...rentalPages, ...locatorPages, ...calendarPages };
+const workspaceHome = { personal: "dashboard", owner: "rental-overview", tenant: "tenant-statements" };
+const alwaysAvailable = new Set(["account", "support", "plans", "join", "rentals-start", "about", "notifications", "business-centers"]);
+
+function currentNavigation() {
+  const { type } = getWorkspace();
+  return type === "owner" ? ownerNavigation : type === "tenant" ? tenantNavigation : personalNavigation;
+}
+
+const pageIdsOf = (groups) => new Set(groups.flatMap((group) => group.items.map(([id]) => id)));
+
 const pageTitles = {
   dashboard: ["Good morning, Rean Justine!", "Here's what's happening with your electricity today."],
-  realtime: ["Real-time Monitor", "Track your electricity usage as it happens."],
+  realtime: ["Usage Patterns", "A sample daily usage profile — SmartWatts does not connect to meters."],
   history: ["Usage History", "Review and compare your past electricity consumption."],
   breakdown: ["Analytics", "Understand where your electricity is being consumed."],
-  devices: ["Device Monitor", "Monitor connected appliances and their energy usage."],
+  devices: ["My Appliances", "Register appliances and estimate their energy use."],
   goals: ["Energy Goals", "Build better habits and track your household energy targets."],
   rewards: ["Rewards & Badges", "Celebrate the small steps that help you use energy wisely."],
   billing: ["Billing & Payments", "Review your estimated bill and payment details."],
-  bills: ["Bill History", "View your previous statements and payments."],
   rates: ["Rates Overview", "Understand your electricity rate and charges."],
   notifications: ["Notifications", "Stay updated with usage alerts and account activity."],
   account: ["Account Settings", "Manage your profile and account preferences."],
   support: ["Help & Support", "Find answers or contact the SmartWatts support team."],
   about: ["About Team", "Meet the people and purpose behind SmartWatts."],
 };
+for (const [id, page] of Object.entries(modulePages)) pageTitles[id] = [page.title, page.subtitle];
 
 const devices = [
   ["snowflake", "Air Conditioner", "129.23", "38%"],
@@ -86,10 +162,10 @@ const historyRecords = [
 ];
 
 const notificationItems = [
-  ["triangle-alert", "High Usage Alert", "Your usage is 20% higher than yesterday at this time.", "9:15 AM"],
+  ["triangle-alert", "Sample Usage Alert", "Sample: this month's usage is 12% higher than last month.", "9:15 AM"],
   ["receipt-text", "Bill is Ready", "Your May 2026 bill is now available.", "Yesterday"],
   ["circle-check", "Payment Received", "Thank you! Your payment of ₱1,150.00 was successful.", "Apr 15"],
-  ["plug-zap", "Device Connected", "A new device was added to your monitor.", "Apr 12"],
+  ["receipt-text", "Bill Reminder", "Upload your latest bill to keep your history up to date.", "Apr 12"],
 ];
 
 // Inline SVG paths keep the icon set dependency-free.
@@ -144,7 +220,7 @@ function icon(name, size = 20) {
 }
 
 function renderNavigation() {
-  $("#navigation").innerHTML = navigationGroups
+  $("#navigation").innerHTML = currentNavigation()
     .map(
       (group) => `
         <div class="nav-group">
@@ -401,29 +477,6 @@ function notificationList(items = notificationItems) {
     .join("");
 }
 
-function deviceCards() {
-  return `
-    <div class="grid card-grid">
-      ${devices
-        .map(
-          ([iconName, name, usage, percent], index) => `
-            <article class="panel device-card">
-              <div class="device-card-top">
-                <span class="stat-icon">${icon(iconName, 22)}</span>
-                <span class="status ${index === 4 ? "off" : ""}">${index === 4 ? "Standby" : "Online"}</span>
-              </div>
-              <h3>${name}</h3>
-              <p>Device energy consumption</p>
-              <div class="stat-value">${usage} <small>kWh</small></div>
-              <div class="bar"><span style="width:${parseInt(percent, 10)}%"></span></div>
-              <div class="stat-foot">${percent} of total usage</div>
-              <button class="btn btn-outline" style="margin-top:13px" data-action="device">View Details</button>
-            </article>`,
-        )
-        .join("")}
-    </div>`;
-}
-
 function historyTable() {
   return `
     <table class="table">
@@ -451,7 +504,7 @@ function dashboardPage() {
 
   return `
     <div class="grid stats">
-      ${stat("gauge", "Current Usage", "0.62", "kW", "As of 10:24 AM", `${icon("radio", 13)} Live`)}
+      ${stat("gauge", "Typical Load", "0.62", "kW", "Sample profile, not a live reading", "Sample")}
       ${stat("chart-no-axes-column-increasing", "Today's Consumption", "11.45", "kWh", "vs yesterday", `${icon("trending-down", 13)} 8.6%`)}
       ${stat("chart-pie", "This Month", "342.18", "kWh", "vs last month", `${icon("trending-up", 13)} 12.4%`)}
       ${stat("receipt", "Est. Bill Amount", "₱1,256.34", "", "Due on May 20, 2026", "")}
@@ -459,10 +512,10 @@ function dashboardPage() {
     ${gamificationCard()}
     <div class="dashboard-layout">
       <div class="left-stack">
-        ${panel("Real-time Usage", chartCanvas("usageChart", "tall"), `<span class="live">${icon("radio", 13)} Live</span><select class="select" data-chart-range="dashboard" aria-label="Usage time range"><option value="today">Today</option><option value="week">This Week</option><option value="month">This Month</option><option value="quarter">Quarterly</option><option value="year">Yearly</option></select>`)}
+        ${panel("Usage Profile", chartCanvas("usageChart", "tall"), `<span class="kind-badge kind-sample">Sample data</span><select class="select" data-chart-range="dashboard" aria-label="Usage time range"><option value="today">Today</option><option value="week">This Week</option><option value="month">This Month</option><option value="quarter">Quarterly</option><option value="year">Yearly</option></select>`)}
         <div class="two-panels">
           ${panel("Usage Breakdown <small>(This Month)</small>", `<div class="donut-layout"><div class="donut-wrap"><canvas id="usageDonut"></canvas></div><div class="legend">${usageLegend}</div></div><button class="btn btn-outline" data-page="breakdown">View Full Breakdown</button>`)}
-          ${panel("Top Devices <small>(This Month)</small>", deviceTable())}
+          ${panel("Top Appliances <small>(Sample estimate)</small>", deviceTable())}
         </div>
       </div>
       <div class="right-stack">
@@ -476,18 +529,18 @@ function dashboardPage() {
 // Individual screen templates
 function realtimePage() {
   return `
-    ${pageHead("Live electricity consumption", "Your meter usage updates in real time.", `<span class="live">${icon("radio", 13)} Live</span><select class="select" data-chart-range="realtime" aria-label="Usage time range"><option value="today">Today</option><option value="last24">Last 24 hours</option><option value="week">This Week</option><option value="month">This Month</option><option value="quarter">Quarterly</option><option value="year">Yearly</option></select>`)}
+    ${pageHead("Usage patterns", "A sample daily load profile. SmartWatts does not connect to meters, cameras, or smart devices.", `<span class="kind-badge kind-sample">Sample data</span><select class="select" data-chart-range="realtime" aria-label="Usage time range"><option value="today">Today</option><option value="last24">Last 24 hours</option><option value="week">This Week</option><option value="month">This Month</option><option value="quarter">Quarterly</option><option value="year">Yearly</option></select>`)}
     <div class="grid stats">
-      ${stat("zap", "Current Load", "0.62", "kW", "Live reading", `${icon("radio", 13)} Active`)}
-      ${stat("clock", "Peak Today", "1.32", "kW", "At 7:30 AM", "")}
-      ${stat("chart-no-axes-column-increasing", "Today's Energy", "11.45", "kWh", "Since 12:00 AM", "")}
-      ${stat("gauge", "Average Load", "0.48", "kW", "Today's average", "")}
+      ${stat("zap", "Typical Load", "0.62", "kW", "Sample profile", "")}
+      ${stat("clock", "Typical Peak", "1.32", "kW", "Around 7:30 AM", "")}
+      ${stat("chart-no-axes-column-increasing", "Daily Energy", "11.45", "kWh", "Sample day", "")}
+      ${stat("gauge", "Average Load", "0.48", "kW", "Sample day", "")}
     </div>
-    ${panel("Live Usage Trend", chartCanvas("realtimeChart", "tall"))}
+    ${panel("Sample Usage Trend", chartCanvas("realtimeChart", "tall"))}
     <div class="grid card-grid" style="margin-top:14px">
-      ${panel("Meter Status", `<span class="status">Connected</span><p class="stat-foot">Last sync: Just now</p>`)}
-      ${panel("Today's Peak", `<div class="bill-amount">1.32 kW</div><p class="stat-foot">Recorded at 7:30 AM</p>`)}
-      ${panel("Energy Today", `<div class="bill-amount">11.45 kWh</div><p class="stat-foot">Estimated daily usage</p>`)}
+      ${panel("Data Source", `<span class="kind-badge kind-sample">Sample data</span><p class="stat-foot">No meter is connected. Add your official bills to track real consumption.</p><button class="btn btn-outline" data-page="bills">Add a bill</button>`)}
+      ${panel("Estimate Your Appliances", `<p class="stat-foot">Register appliances and schedules to see where your electricity likely goes.</p><button class="btn btn-outline" data-page="devices">My Appliances</button>`)}
+      ${panel("Plan Savings", `<p class="stat-foot">Try schedule changes in the savings simulator.</p><button class="btn btn-outline" data-page="simulator">Open simulator</button>`)}
     </div>`;
 }
 
@@ -525,18 +578,6 @@ function analyticsPage() {
     <div style="margin-top:14px">${panel("Appliance Consumption Details", deviceTable())}</div>`;
 }
 
-function devicesPage() {
-  return `
-    ${pageHead("Connected devices", "Track appliance activity and energy consumption.", `<button class="btn btn-primary" data-action="addDevice">${icon("plus", 16)} Add Device</button>`)}
-    <div class="grid stats">
-      ${stat("plug-zap", "Total Devices", "5", "", "Connected appliances", "")}
-      ${stat("radio", "Currently Online", "4", "", "Active devices", "")}
-      ${stat("zap", "Combined Load", "0.62", "kW", "Current demand", "")}
-      ${stat("chart-no-axes-column-increasing", "Device Usage", "342.18", "kWh", "This month", "")}
-    </div>
-    ${deviceCards()}`;
-}
-
 function billingPage() {
   const breakdownRows = [
     ["Generation Charge", "₱715.20"],
@@ -555,16 +596,10 @@ function billingPage() {
       ${stat("circle-check", "Last Payment", "₱1,150.00", "", "Received Apr 15, 2026", "")}
     </div>
     <div class="two-panels">
-      ${panel("Current Bill", `<div class="stat-label">Estimated amount due</div><div class="bill-amount">₱1,256.34</div><p class="stat-foot">Due date: May 20, 2026</p><div class="progress"><span></span></div><p class="stat-foot">Your estimated bill is based on current consumption.</p><button class="btn btn-primary" style="margin-top:15px" data-action="pay">Proceed to Payment</button>`)}
+      ${panel("Current Bill", `<div class="stat-label">Estimated amount due</div><div class="bill-amount">₱1,256.34</div><p class="stat-foot">Due date: May 20, 2026</p><div class="progress"><span></span></div><p class="stat-foot">Your estimated bill is based on current consumption.</p><button class="btn btn-primary" style="margin-top:15px" data-action="pay">How to pay your utility</button>`)}
       ${panel("Bill Breakdown", tableRows(breakdownRows))}
     </div>
     <div style="margin-top:14px">${panel("Payment Methods", `<div class="detail-row"><span>Available payment channels</span><b>Online banking · E-wallet · Payment centers</b></div><p class="stat-foot">Payments are simulated in this UI demo. No real transaction will be made.</p>`)}</div>`;
-}
-
-function billsPage() {
-  return `
-    ${pageHead("Bill history", "Your statements and payment records.", `<select class="select"><option>All years</option><option>2026</option><option>2025</option></select><button class="btn btn-outline" data-action="export">Export</button>`)}
-    ${panel("Previous Statements", historyTable())}`;
 }
 
 function ratesPage() {
@@ -599,6 +634,7 @@ function notificationsPage() {
 function accountPage() {
   return `
     ${pageHead("Account settings", "Manage your account details and preferences.")}
+    <div style="margin-bottom:14px">${panel("Sign-in & security", `<div data-slot="account-security"><p class="muted-note">Loading…</p></div>`)}</div>
     <div class="settings-layout">
       <div class="panel settings-menu">
         <button class="active">Personal Information</button>
@@ -635,7 +671,7 @@ function supportPage() {
   return `
     ${pageHead("Help & Support", "We're here to help you manage your electricity.")}
     <div class="grid card-grid">
-      ${panel("Frequently Asked Questions", `<h3>How is my bill estimated?</h3><p class="stat-foot">Your estimate uses recent consumption and sample rates. Your official bill is the final reference.</p><h3>How do I monitor a device?</h3><p class="stat-foot">Open Device Monitor to review connected appliance usage.</p>`)}
+      ${panel("Frequently Asked Questions", `<h3>How is my bill estimated?</h3><p class="stat-foot">Your estimate uses recent consumption and sample rates. Your official bill is the final reference.</p><h3>Can my landlord see my appliances?</h3><p class="stat-foot">No. Appliances, schedules, savings plans, and AI chats are private to your account, even when you rent through SmartWatts Rentals.</p>`)}
       ${panel("Contact Support", `
         <p class="contact-intro"><strong>General Contact Information</strong><span>Your feedback means a lot to us</span></p>
         <div class="contact-options">
@@ -646,6 +682,7 @@ function supportPage() {
             </a>`;
           }).join("")}
         </div>`)}
+      ${panel("Meralco Business Centers", `<p class="stat-foot">Search the official list of Meralco Business Centers, see published branch contacts, and get directions.</p><button class="btn btn-primary" data-page="business-centers">Find a Business Center</button>`)}
       ${panel("System Information", `<div class="detail-list">${detail("Application", "SmartWatts UI Demo")}${detail("Version", "1.0.0")}${detail("Status", "<span class='status'>Operational</span>")}</div>`)}
     </div>`;
 }
@@ -674,11 +711,9 @@ const pageRenderers = {
   realtime: realtimePage,
   history: historyPage,
   breakdown: analyticsPage,
-  devices: devicesPage,
   goals: goalsPage,
   rewards: rewardsPage,
   billing: billingPage,
-  bills: billsPage,
   rates: ratesPage,
   notifications: notificationsPage,
   account: accountPage,
@@ -687,13 +722,101 @@ const pageRenderers = {
 };
 
 // Page rendering and navigation
+let loadSequence = 0;
+const pageState = {};
+
+const pageContext = {
+  pageHead: (...args) => pageHead(...args),
+  panel: (...args) => panel(...args),
+  stat: (...args) => stat(...args),
+  icon: (...args) => icon(...args),
+  escape: escapeHtml,
+  toast: (message) => toast(message),
+  navigate: (page) => navigate(page),
+  render: () => render(),
+  translate: (root) => translateTree(root, getLanguage()),
+  state: pageState,
+  accountChanged: () => refreshWorkspaces(),
+};
+
+function renderWorkspaceSwitcher() {
+  const container = $("#workspaceSwitcher");
+  if (!container) return;
+  const choices = workspaceOptions();
+  const workspace = getWorkspace();
+  if (choices.length < 2) {
+    container.innerHTML = "";
+    return;
+  }
+  const selected = workspace.type === "personal" ? "personal" : workspace.propertyId;
+  container.innerHTML = `<label for="workspaceSelect">Workspace</label>
+    <select id="workspaceSelect" class="select" translate="no">${choices
+      .map((choice) => `<option value="${escapeHtml(choice.value)}"${choice.value === selected ? " selected" : ""}>${escapeHtml(choice.label)}</option>`)
+      .join("")}</select>`;
+}
+
+// Loaders finish asynchronously. Each one gets a root that goes inert as soon as
+// a newer render starts, so a slow, stale loader can never overwrite fresh content.
+function guardedRoot(element, sequence) {
+  const live = () => sequence === loadSequence;
+  return {
+    querySelector: (selector) => (live() ? element.querySelector(selector) : null),
+    querySelectorAll: (selector) => (live() ? element.querySelectorAll(selector) : []),
+    insertAdjacentHTML: (position, html) => {
+      if (live()) element.insertAdjacentHTML(position, html);
+    },
+    get isStale() {
+      return !live();
+    },
+  };
+}
+
+function runPageLoader(content) {
+  const sequence = ++loadSequence;
+  const loader = modulePages[currentPage]?.load ?? personalLoaders[currentPage];
+  if (!loader) return;
+  const root = guardedRoot(content, sequence);
+  Promise.resolve()
+    .then(() => loader(pageContext, root))
+    .catch((error) => {
+      if (sequence !== loadSequence) return;
+      const message = error instanceof Error ? error.message : "Could not load this page.";
+      root.querySelectorAll("[data-slot] > .muted-note").forEach((node) => {
+        if (node.textContent === "Loading…") node.textContent = "Not available.";
+      });
+      root.insertAdjacentHTML("afterbegin", `<div class="notice notice-danger" role="alert">${escapeHtml(message)}</div>`);
+    })
+    .finally(() => {
+      if (sequence === loadSequence) translateTree(content, getLanguage());
+    });
+}
+
+let lastAccountKey = null;
+
+async function refreshWorkspaces({ force = true } = {}) {
+  const memberships = await loadWorkspaces();
+  const account = currentAccount();
+  const key = JSON.stringify([account.permanent, account.email, account.emailVerified, memberships]);
+  const changed = key !== lastAccountKey;
+  lastAccountKey = key;
+  // A background anonymous sign-in changes nothing visible; re-rendering would wipe half-filled forms.
+  if (!force && !changed && currentPage !== "account") return;
+  const allowed = new Set([...pageIdsOf(currentNavigation()), ...alwaysAvailable]);
+  if (!allowed.has(currentPage)) currentPage = workspaceHome[getWorkspace().type];
+  render();
+}
+
 function render() {
   charts.forEach((chart) => chart.destroy());
   charts = [];
 
+  renderWorkspaceSwitcher();
   renderNavigation();
   renderPageHeading();
-  $("#content").innerHTML = pageRenderers[currentPage]();
+  const modulePage = modulePages[currentPage];
+  const content = $("#content");
+  content.innerHTML = modulePage ? modulePage.render(pageContext) : pageRenderers[currentPage]();
+  document.body.classList.toggle("workspace-rental", getWorkspace().type !== "personal");
   renderCharts();
   renderGameChrome(currentPage);
   animateNumbers();
@@ -702,6 +825,7 @@ function render() {
   applyTheme(document.body.classList.contains("theme-dark") ? "dark" : "light");
   document.title = "SmartWatts | Energy Dashboard";
   translateTree(document.documentElement, language);
+  runPageLoader(content);
 }
 
 function toast(message) {
@@ -728,6 +852,12 @@ function closeSidebar() {
 
 function navigate(page) {
   if (!pageTitles[page]) return;
+  const workspace = getWorkspace();
+  if (!pageIdsOf(currentNavigation()).has(page) && !alwaysAvailable.has(page)) {
+    if (pageIdsOf(personalNavigation).has(page)) setWorkspace(null);
+    else if (workspace.type === "personal") page = "rentals-start";
+    else return;
+  }
 
   currentPage = page;
   render();
@@ -739,9 +869,7 @@ function navigate(page) {
 const actionMessages = {
   export: "Demo export prepared. Connect a backend to download real records.",
   download: "Sample statement download is not connected yet.",
-  pay: "Payment is a demo action. No transaction was made.",
-  addDevice: "Device pairing is ready for backend integration.",
-  device: "Device details opened in demo mode.",
+  pay: "SmartWatts does not process payments. Pay through your electric utility's official channels.",
   markRead: "All notifications marked as read.",
   challengeDone: "You have already completed today's sample challenge.",
 };
@@ -750,6 +878,21 @@ document.addEventListener("click", (event) => {
   const questButton = event.target.closest("[data-quest]");
   if (questButton) {
     claimQuest(questButton.dataset.quest, questButton);
+    return;
+  }
+
+  const actButton = event.target.closest("[data-act]");
+  if (actButton) {
+    const handler = personalActions[actButton.dataset.act] ?? rentalActions[actButton.dataset.act] ?? locatorActions[actButton.dataset.act] ?? calendarActions[actButton.dataset.act];
+    if (handler) {
+      event.preventDefault();
+      actButton.disabled = true;
+      Promise.resolve(handler(actButton, pageContext))
+        .catch((error) => toast(error instanceof Error ? error.message : "Something went wrong."))
+        .finally(() => {
+          if (actButton.isConnected) actButton.disabled = false;
+        });
+    }
     return;
   }
 
@@ -765,8 +908,27 @@ document.addEventListener("click", (event) => {
   }
 });
 
+document.addEventListener("input", (event) => {
+  if (event.target.matches?.("[data-locator]")) handleLocatorInput(event.target);
+});
+
 document.addEventListener("change", (event) => {
   const changed = event.target;
+  if (changed.matches("[data-locator]")) {
+    handleLocatorInput(changed);
+    return;
+  }
+  if (changed.id === "workspaceSelect") {
+    setWorkspace(changed.value === "personal" ? null : { propertyId: changed.value });
+    navigate(workspaceHome[getWorkspace().type]);
+    return;
+  }
+  if (changed.matches("[data-ocr]")) {
+    if (changed.dataset.ocr === "personal-bill") handlePersonalBillOcr(changed, pageContext);
+    else if (changed.dataset.ocr === "appliance-label") handleApplianceLabelScan(changed, pageContext);
+    else handleRentalOcr(changed.dataset.ocr, changed, pageContext);
+    return;
+  }
   if (changed.id === "ui-language") {
     setLanguage(changed.value);
     return;
@@ -781,8 +943,32 @@ document.addEventListener("change", (event) => {
 window.addEventListener("smartwatts-language-change", (event) => {
   const language = typeof event.detail === "string" ? event.detail : "en";
   $("#ui-language").value = language;
+  const unsaved = captureFormValues();
   render();
+  restoreFormValues(unsaved);
 });
+
+// Changing the interface language re-renders the page; carry unsaved form input across it.
+function captureFormValues() {
+  return [...document.querySelectorAll("#content form[data-form] [name]")]
+    .filter((field) => field.type !== "file" && field.type !== "hidden")
+    .map((field) => ({
+      form: field.form?.dataset.form,
+      name: field.name,
+      value: field.value,
+      checked: field.checked,
+      type: field.type,
+    }));
+}
+
+function restoreFormValues(saved) {
+  for (const entry of saved) {
+    const field = document.querySelector(`#content form[data-form="${CSS.escape(entry.form ?? "")}"] [name="${CSS.escape(entry.name)}"]`);
+    if (!field) continue;
+    if (entry.type === "checkbox" || entry.type === "radio") field.checked = entry.checked;
+    else field.value = entry.value;
+  }
+}
 
 window.addEventListener("smartwatts-translation-error", (event) => {
   const detail = event.detail;
@@ -803,8 +989,9 @@ window.addEventListener("smartwatts-languages-loaded", (event) => {
   const selected = languages.some((language) => language.code === getLanguage()) ? getLanguage() : "en";
   selector.replaceChildren(...languages.map((language) => new Option(language.name, language.code)));
   selector.value = selected;
+  // Only re-render when the language actually changes. Re-rendering for an unchanged language
+  // (this list loads asynchronously after startup) wiped half-filled forms at random moments.
   if (selected !== getLanguage()) setLanguage(selected);
-  else window.dispatchEvent(new CustomEvent("smartwatts-language-change", { detail: selected }));
 });
 
 $("#themeToggle").addEventListener("click", () => {
@@ -819,6 +1006,20 @@ $("#themeToggle").addEventListener("click", () => {
 });
 
 document.addEventListener("submit", (event) => {
+  const formName = event.target.dataset?.form;
+  const formHandler = formName && (personalForms[formName] ?? rentalForms[formName]);
+  if (formHandler) {
+    event.preventDefault();
+    const form = event.target;
+    const submit = form.querySelector('[type="submit"], button:not([type])');
+    if (submit) submit.disabled = true;
+    Promise.resolve(formHandler(form, pageContext))
+      .catch((error) => toast(error instanceof Error ? error.message : "Something went wrong."))
+      .finally(() => {
+        if (submit?.isConnected) submit.disabled = false;
+      });
+    return;
+  }
   if (event.target.id === "energyGoalForm") {
     event.preventDefault();
     const form = event.target;
@@ -844,6 +1045,12 @@ $("#menuToggle").addEventListener("click", () => {
   $("#menuToggle").setAttribute("aria-expanded", String(isOpen));
 });
 
+// The mobile tab bar's "More" button opens the same navigation drawer as the top menu button.
+$("#mobileMore").addEventListener("click", () => {
+  $("#sidebar").classList.add("open");
+  $("#menuToggle").setAttribute("aria-expanded", "true");
+});
+
 $("#closeSidebar").addEventListener("click", closeSidebar);
 $("#sidebarBackdrop").addEventListener("click", closeSidebar);
 
@@ -861,9 +1068,12 @@ document.addEventListener("keydown", (event) => {
 });
 
 setGameCallbacks({ render, toast, pageHead, stat, panel, language: getLanguage });
+if (readInviteFromHash()) currentPage = "join";
 render();
-
-render();
+lastAccountKey = JSON.stringify([false, null, false, []]);
+onAccountChange(() => {
+  refreshWorkspaces({ force: false }).catch(() => undefined);
+});
 
 loadSupportedLanguages()
   .then((languages) => {
@@ -871,10 +1081,8 @@ loadSupportedLanguages()
   })
   .catch((error) => {
     window.dispatchEvent(new CustomEvent("smartwatts-languages-loaded", {
-      detail: [
-        { code: "en", name: "English" },
-        { code: "tl", name: "Tagalog" },
-      ],
+      // Without Google Cloud Translation, offer every language with a local dictionary.
+      detail: getSupportedLanguages(),
     }));
     const message = error instanceof Error ? error.message : "Could not load supported languages.";
     window.dispatchEvent(new CustomEvent("smartwatts-translation-error", { detail: message }));

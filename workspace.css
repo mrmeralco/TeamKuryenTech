@@ -1,0 +1,132 @@
+/* Workspaces, Personal tools, and SmartWatts Rentals screens. */
+.workspace-switcher{display:grid;gap:6px;padding:0 10px 14px}
+.workspace-switcher:empty{display:none}
+.workspace-switcher label{font-size:11px;font-weight:700;letter-spacing:.6px;opacity:.85;text-transform:uppercase}
+.workspace-switcher select{width:100%;color:#2b2f3a;font-weight:700}
+
+.notice{border-radius:12px;padding:12px 14px;margin:0 0 14px;font-size:13px;line-height:1.55;border:1px solid}
+.notice-info{background:#f2f6ff;border-color:#d7e2fb;color:#253457}
+.notice-warning{background:#fff7e6;border-color:#ffe0a3;color:#5c4100}
+.notice-danger{background:#fff0ee;border-color:#ffc9c0;color:#7a1f10}
+.notice .text-link{margin-left:6px}
+
+.kind-badge{display:inline-block;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800;margin:0 4px 4px 0;white-space:nowrap;vertical-align:middle}
+.kind-official{background:#e9f0ff;color:#1f45a8}
+.kind-measured{background:#e7f7ee;color:#17693b}
+.kind-estimate{background:#fff1dc;color:#8a4b00}
+.kind-allocation{background:#f2ebff;color:#5b2ea8}
+.kind-sample{background:#eeeeee;color:#4a4f5b}
+
+.muted-note{color:var(--muted);font-size:12px;line-height:1.55;margin:6px 0}
+.field-hint{color:var(--muted);font-size:11px}
+.field label{display:grid;gap:7px}
+.field.check,.check{display:flex;gap:9px;align-items:flex-start;font-size:12px;line-height:1.5;color:#3e4452}
+.check input{margin-top:3px;width:auto}
+.form-grid h4{margin:0;font-size:14px}
+.btn-small{padding:6px 10px;font-size:12px}
+.btn:disabled{opacity:.6;cursor:wait}
+.text-link{background:none;border:0;color:var(--orange);font-weight:700;cursor:pointer;padding:0}
+.table-scroll{overflow-x:auto;max-width:100%}
+.inline-form{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.inline-form input{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font:inherit;max-width:160px}
+.upload-drop{display:flex;justify-content:center;align-items:center;gap:8px;border:1.5px dashed #ffc49b;background:#fff7f0;border-radius:12px;padding:13px;color:#b54700;font-weight:800;cursor:pointer;margin-bottom:8px;text-align:center}
+.upload-drop:focus-within{outline:2px solid var(--orange);outline-offset:2px}
+.share-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+.share-grid label{display:grid;gap:4px;font-size:12px}
+.share-grid input{border:1px solid var(--line);border-radius:8px;padding:8px}
+.calc-details{margin:8px 0}
+.calc-details summary{cursor:pointer;color:var(--orange);font-weight:700;font-size:12px}
+.calc-details pre{white-space:pre-wrap;word-break:break-word;background:#faf7f4;border-radius:8px;padding:10px;font-size:11px;max-height:260px;overflow:auto}
+.content > .panel + .panel{margin-top:14px}
+.invite-result{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.invite-result .qr{background:white;padding:8px;border-radius:12px;width:200px;max-width:100%}
+.invite-result .qr svg{display:block;width:100%;height:auto}
+.invite-link{width:100%;min-width:0;max-width:520px;border:1px solid var(--line);border-radius:8px;padding:9px;font:12px monospace;margin:6px 0}
+.plan-grid{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:14px}
+.plan-card h3{margin:2px 0 4px;font-size:18px}
+.plan-card .eyebrow{margin:0;color:var(--orange);font-size:11px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase}
+.plan-featured{border-color:#ffc49b}
+.plan-list{padding-left:18px;line-height:1.8;font-size:13px;color:#3e4452}
+
+body.workspace-rental .mobile-tabbar{display:none}
+
+@media (max-width: 760px){
+  .plan-grid{grid-template-columns:1fr}
+  .form-grid{grid-template-columns:1fr}
+  .inline-form input{max-width:100%}
+}
+
+body.theme-dark .notice-info{background:#1d2433;border-color:#2e3a55;color:#d4def5}
+body.theme-dark .notice-warning{background:#2d2412;border-color:#5a4416;color:#f7dfa6}
+body.theme-dark .notice-danger{background:#33191a;border-color:#6a2b25;color:#ffc9c0}
+body.theme-dark .kind-official{background:#1d2a4a;color:#b9ccff}
+body.theme-dark .kind-measured{background:#173325;color:#a6e6c0}
+body.theme-dark .kind-estimate{background:#3a2a10;color:#ffd08a}
+body.theme-dark .kind-allocation{background:#2c2142;color:#d5c2ff}
+body.theme-dark .kind-sample{background:#33302b;color:#d8d3cb}
+body.theme-dark .check,body.theme-dark .plan-list{color:#ddd5ca}
+body.theme-dark .upload-drop{background:#2c241c;border-color:#7a4a22;color:#ffb27a}
+body.theme-dark .calc-details pre{background:#1d1b18;color:#ece4d8}
+body.theme-dark .inline-form input,body.theme-dark .share-grid input,body.theme-dark .invite-link{background:#1d1b18;color:#ece4d8;border-color:#3a352e}
+
+/* Appliance Label Scanner */
+.scanner-mode-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.scanner-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;font-weight:700;font-size:13px;padding:9px 14px;border-radius:10px}
+.scanner-box{background:var(--bg-card,#fff);border:1px solid var(--line,#e6ded5);border-radius:12px;padding:14px;margin-bottom:14px}
+.scanner-preview-wrapper{display:flex;flex-direction:column;align-items:center;gap:10px;background:#faf6f0;border:1px dashed var(--line,#dec8b4);border-radius:10px;padding:12px;margin:10px 0}
+.scanner-preview-img{max-height:260px;max-width:100%;object-fit:contain;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+.scanner-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center}
+.scanner-progress{width:100%;display:grid;gap:6px;margin:8px 0}
+.scanner-progress-track{background:#e8dfd5;height:8px;border-radius:999px;overflow:hidden}
+.scanner-progress-fill{background:linear-gradient(90deg,var(--orange,#ff7a00),#ffaa40);height:100%;transition:width .2s ease}
+.scanner-progress-text{font-size:12px;color:var(--muted,#6e655c);font-weight:700;text-align:center}
+.candidate-selector{background:#fdf7ee;border:1px solid #fed8a6;border-radius:10px;padding:10px 12px;margin:10px 0}
+.candidate-selector p{margin:0 0 6px;font-size:12px;font-weight:800;color:#7a4500}
+.candidate-chips{display:flex;gap:6px;flex-wrap:wrap}
+.candidate-chip{background:#fff;border:1.5px solid var(--orange,#ff7a00);border-radius:999px;padding:4px 10px;font-size:12px;font-weight:700;color:var(--orange,#ff7a00);cursor:pointer}
+.candidate-chip:hover{background:var(--orange,#ff7a00);color:#fff}
+.tested-energy-card{background:#eef8f3;border:1px solid #b7e4cd;border-radius:10px;padding:10px 12px;margin:10px 0;font-size:12.5px;color:#135934;line-height:1.5}
+.live-calc-box{background:#f7f9fc;border:1px solid #d9e2ef;border-radius:10px;padding:10px 14px;margin:8px 0 14px}
+.live-calc-value{font-size:18px;font-weight:800;color:var(--text,#1a1a1a);margin:2px 0}
+.live-calc-foot{font-size:11.5px;color:var(--muted,#6e655c)}
+.raw-ocr-drawer{margin:10px 0}
+.raw-ocr-drawer summary{font-size:12px;font-weight:700;color:var(--orange,#ff7a00);cursor:pointer}
+.raw-ocr-drawer pre{background:#23201d;color:#f0e9df;padding:10px;border-radius:8px;font-size:11px;max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin-top:6px}
+
+body.theme-dark .scanner-box{background:#23201d;border-color:#3d362e}
+body.theme-dark .scanner-preview-wrapper{background:#1a1816;border-color:#4a3f35}
+body.theme-dark .scanner-progress-track{background:#3a342c}
+body.theme-dark .candidate-selector{background:#2e2412;border-color:#5c471d}
+body.theme-dark .candidate-selector p{color:#f7dfa6}
+body.theme-dark .candidate-chip{background:#1d180f;color:#ffaa55;border-color:#ffaa55}
+body.theme-dark .tested-energy-card{background:#152b1f;border-color:#2a573e;color:#b2e6c8}
+body.theme-dark .live-calc-box{background:#1d222d;border-color:#2c374d}
+body.theme-dark .live-calc-value{color:#e6edf8}
+
+/* Meralco Business Center locator */
+.locator-layout{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);align-items:start}
+.locator-side{display:grid;gap:14px}
+.center-list{list-style:none;margin:0;padding:0;display:grid;gap:6px;max-height:520px;overflow:auto}
+.center-item{width:100%;text-align:left;border:1px solid var(--line);background:white;border-radius:10px;padding:10px 12px;cursor:pointer;display:grid;gap:3px;font:inherit;color:inherit}
+.center-item small{color:var(--muted)}
+.center-item:hover,.center-item.active{border-color:#ffb27a;background:#fff7f0}
+.center-item:focus-visible{outline:2px solid var(--orange);outline-offset:2px}
+.locator-map{height:360px;border-radius:12px;overflow:hidden}
+.center-marker{width:18px;height:18px;border-radius:50%;background:var(--orange);border:3px solid white;box-shadow:0 1px 4px rgba(0,0,0,.35);cursor:pointer;padding:0}
+.center-marker.active{width:24px;height:24px;background:#c24100}
+@media (max-width: 900px){.locator-layout{grid-template-columns:1fr}.center-list{max-height:320px}}
+body.theme-dark .center-item{background:#24211c;border-color:#3a352e}
+body.theme-dark .center-item:hover,body.theme-dark .center-item.active{background:#2c241c;border-color:#7a4a22}
+.privacy-note{background:#f2f8f4;border-radius:10px;padding:8px 10px;color:#245c3a}
+body.theme-dark .privacy-note{background:#173325;color:#a6e6c0}
+.charge-breakdown summary{cursor:pointer;font-weight:700;font-size:12px;color:var(--orange)}
+
+/* Consumption calendar */
+.calendar-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:10px 0}
+.calendar-month{border:1px solid var(--line);border-radius:10px;padding:8px;display:grid;gap:4px;align-content:start;min-height:86px;font-size:12px}
+.calendar-month.has-data{border-color:#ffc49b;background:#fffaf5}
+.calendar-period{display:grid;gap:1px;padding:4px 0;border-top:1px dashed var(--line)}
+.calendar-years{margin-bottom:6px}
+@media (max-width: 760px){.calendar-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+body.theme-dark .calendar-month{border-color:#3a352e}
+body.theme-dark .calendar-month.has-data{background:#2c241c;border-color:#7a4a22}
