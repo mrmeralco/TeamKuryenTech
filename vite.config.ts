@@ -75,17 +75,24 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: [],
+      includeAssets: ["install-banner.js", "apple-touch-icon.png", "smartwatts-icon-192.png"],
+      // Serve the manifest in `npm run dev` too, so the "Download app" banner can be tried locally.
+      devOptions: { enabled: true },
       manifest: {
+        id: "/dashboard",
         name: "SmartWatts",
         short_name: "SmartWatts",
         description: "Monitor and understand your household electricity use.",
-        theme_color: "#fffaf2",
+        theme_color: "#ff7b00",
         background_color: "#fffaf2",
         display: "standalone",
+        scope: "/",
         start_url: "/dashboard",
         icons: [
-          { src: "/pwa-icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
+          { src: "/smartwatts-icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "/smartwatts-icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+          { src: "/smartwatts-icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+          { src: "/smartwatts-app-icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
         ],
       },
       workbox: {
