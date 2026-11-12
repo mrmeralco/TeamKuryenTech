@@ -597,7 +597,7 @@ function legend(names, values) {
       (name, index) => `
         <div class="legend-item">
           <span class="dot" style="background:${CHART_COLORS[index % CHART_COLORS.length]}"></span>
-          <div><b>${name}</b>${values[index]}</div>
+          <div><b>${escapeHtml(name)}</b>${escapeHtml(values[index])}</div>
         </div>`,
     )
     .join("");
@@ -882,10 +882,10 @@ function notificationList(items = getNotifications()) {
   return items
     .map(
       (n) => `
-        <div class="alert ${n.read ? "alert-read" : "alert-unread"}" data-notif-id="${n.id}">
+        <div class="alert ${n.read ? "alert-read" : "alert-unread"}" data-notif-id="${escapeHtml(n.id)}">
           <div class="alert-icon">${icon(n.icon, 18)}</div>
           <div style="flex:1">
-            <time>${n.time}</time><strong>${n.title}</strong><p>${n.message}</p>
+            <time>${escapeHtml(n.time)}</time><strong>${escapeHtml(n.title)}</strong><p>${escapeHtml(n.message)}</p>
           </div>
           ${!n.read ? `<span class="unread-dot" title="Unread" style="width:8px;height:8px;border-radius:50%;background:var(--orange);display:inline-block;align-self:center;margin-left:8px"></span>` : ""}
         </div>`,
@@ -1022,7 +1022,7 @@ function analyticsPage() {
     <div id="analyticsStats" class="grid stats">
       ${stat("chart-no-axes-column-increasing", "Total Usage", data.totalUsage.displayValue, data.totalUsage.unit, data.totalUsage.foot, "")}
       ${stat("badge-dollar-sign", "Estimated Cost", data.estimatedCost.displayValue, "", data.estimatedCost.foot, "")}
-      ${stat(largestIcon, "Largest Consumer", data.largestConsumer.displayPercent, "", data.largestConsumer.name, data.largestConsumer.foot)}
+      ${stat(largestIcon, "Largest Consumer", data.largestConsumer.displayPercent, "", escapeHtml(data.largestConsumer.name), data.largestConsumer.foot)}
       ${stat(trendIcon, "Compared to Last Month", data.comparedToLastMonth.displayText, "", data.comparedToLastMonth.foot, data.comparedToLastMonth.trendText)}
     </div>
     <div class="two-panels">
@@ -1060,7 +1060,7 @@ function updateAnalyticsView(monthKey, isUserAction = false) {
     statsWrap.innerHTML = `
       ${stat("chart-no-axes-column-increasing", "Total Usage", data.totalUsage.displayValue, data.totalUsage.unit, data.totalUsage.foot, "")}
       ${stat("badge-dollar-sign", "Estimated Cost", data.estimatedCost.displayValue, "", data.estimatedCost.foot, "")}
-      ${stat(largestIcon, "Largest Consumer", data.largestConsumer.displayPercent, "", data.largestConsumer.name, data.largestConsumer.foot)}
+      ${stat(largestIcon, "Largest Consumer", data.largestConsumer.displayPercent, "", escapeHtml(data.largestConsumer.name), data.largestConsumer.foot)}
       ${stat(trendIcon, "Compared to Last Month", data.comparedToLastMonth.displayText, "", data.comparedToLastMonth.foot, data.comparedToLastMonth.trendText)}`;
   }
 

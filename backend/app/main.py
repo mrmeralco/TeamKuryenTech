@@ -14,6 +14,7 @@ load_dotenv()
 from .security import site  # noqa: E402
 from .security.middleware import SecurityMiddleware  # noqa: E402
 from .security.settings import load_security_settings  # noqa: E402
+from .security.validation import validate_params  # noqa: E402
 
 # Validated before anything else: production refuses to start with missing or weak secrets.
 SECURITY = load_security_settings()
@@ -115,7 +116,7 @@ class TranslationResponse(BaseModel):
     translations: list[str]
 
 
-app = FastAPI(title="SmartWatts API", version="2.0.0")
+app = FastAPI(title="SmartWatts API", version="2.0.0", dependencies=[Depends(validate_params)])
 # Cross-origin access is only for local development (the Vite dev server). In production the site and the API
 # share one origin, so no CORS origins are allowed unless ALLOWED_ORIGINS lists them explicitly.
 _DEV_ORIGINS = "" if SECURITY.production else "http://localhost:5173,http://127.0.0.1:5173"
@@ -152,7 +153,7 @@ async def google_translation_request(method: str, *, params: dict[str, str], pay
         raise HTTPException(status_code=503, detail="Google Cloud Translation is not configured on the server.")
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
             response = await client.request(
                 method,
                 GOOGLE_TRANSLATE_URL,
