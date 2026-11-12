@@ -41,6 +41,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       else if (Array.isArray(error.detail)) message = "Some fields are missing or invalid.";
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
+      if (response.status === 502 || response.status === 503 || response.status === 504) {
+        message = "SmartWatts API service is temporarily unavailable. Please verify the backend server is running.";
+      }
     }
     throw new ApiError(message, response.status);
   }

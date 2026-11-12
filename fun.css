@@ -307,6 +307,13 @@ body .btn-complete:hover, body .btn-complete:active { transform: none; filter: n
 .about-mark { background: var(--orange); border: 2px solid var(--orange-d); border-bottom-width: 6px; box-shadow: none; }
 
 .toast {
+  position: fixed;
+  left: 50%;
+  right: auto;
+  bottom: 30px;
+  transform: translateX(-50%) translateY(10px);
+  max-width: min(90vw, 520px);
+  text-align: center;
   background: var(--ink);
   color: #fff;
   font-family: var(--f-head);
@@ -314,6 +321,9 @@ body .btn-complete:hover, body .btn-complete:active { transform: none; filter: n
   border-radius: 18px;
   border-bottom: 4px solid var(--orange);
   box-shadow: 0 12px 30px rgba(43, 33, 64, .25);
+}
+.toast.show {
+  transform: translateX(-50%) translateY(0);
 }
 
 /* Hero (dashboard) */
@@ -523,6 +533,14 @@ body .btn-complete:hover, body .btn-complete:active { transform: none; filter: n
 .quest.done { background: #f0fbf4; border-color: #b4e8c8; }
 .quest.done .quest-body b { text-decoration: line-through; text-decoration-color: rgba(21, 128, 61, .5); color: var(--ink2); }
 
+.goal-target-outline {
+  border: 2px solid var(--edge);
+  border-radius: 8px;
+  padding: 16px 18px;
+  background: #fffdf9;
+  box-shadow: 0 2px 6px rgba(43, 33, 64, .04);
+}
+
 .goal-ring-row { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
 .goal-copy { flex: 1; min-width: 180px; display: grid; gap: 10px; justify-items: start; }
 .goal-copy strong { font: 700 22px var(--f-head); }
@@ -537,7 +555,7 @@ body .btn-complete:hover, body .btn-complete:active { transform: none; filter: n
   min-height: 44px;
   padding: 8px 12px;
   border: 2px solid var(--edge);
-  border-radius: 14px;
+  border-radius: 8px;
   background: #fff;
   color: var(--ink);
   font: 700 15px var(--f-body);
@@ -759,7 +777,8 @@ body .btn-complete:hover, body .btn-complete:active { transform: none; filter: n
   .mobile-tabbar button.active { background: var(--orange); color: #fff; box-shadow: 0 3px 0 var(--orange-d); }
   .mobile-tabbar button.active .tab-icon { transform: translateY(-1px) scale(1.12); animation: wiggle .5s; }
 
-  .toast { left: 14px; right: 14px; bottom: 96px; text-align: center; }
+  .toast { left: 50%; right: auto; bottom: 96px; transform: translateX(-50%) translateY(10px); width: calc(100vw - 28px); max-width: 480px; text-align: center; }
+  .toast.show { transform: translateX(-50%) translateY(0); }
   .page-footer { padding-bottom: 8px; }
 }
 
@@ -1131,6 +1150,18 @@ body.theme-dark .about-hero {
   border-color: #514332;
 }
 
+body.theme-dark .device-icon {
+  background-color: #302b23;
+  color: #ffd08e;
+  border: 1px solid #514332;
+  box-shadow: none;
+}
+
+body.theme-dark .device-icon .icon {
+  stroke: #ffd08e;
+  color: #ffd08e;
+}
+
 body.theme-dark .week .day small,
 body.theme-dark .game-eyebrow,
 body.theme-dark .xp-next,
@@ -1212,6 +1243,11 @@ body.theme-dark .badge.earned {
 body.theme-dark .badge.locked b,
 body.theme-dark .badge-state.locked {
   color: #c2b7a5;
+}
+
+body.theme-dark .goal-target-outline {
+  background: #26231e;
+  border-color: #514332;
 }
 
 body.theme-dark .ring circle:first-child,

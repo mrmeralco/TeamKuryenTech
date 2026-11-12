@@ -145,9 +145,20 @@ a{color:var(--ink)}a:hover{color:var(--accent-text)}
 <sc-if value="{{showForm}}" hint-placeholder-val="{{ true }}">
 <div class="rise d2" style="text-align: center">
 <h1 style="margin: 0; font-family: 'Inter Tight', Inter, sans-serif; font-weight: 800; font-size: 28px; letter-spacing: -0.025em">Create your account</h1>
-<p style="margin: 6px 0 0; font-size: 15px; color: var(--muted)">Sign up in seconds with your Google account.</p>
+<p style="margin: 6px 0 0; font-size: 15px; color: var(--muted)">Create an account with email or Google. Email accounts verify with a code.</p>
 </div>
 
+<form onSubmit="{{registerEmail}}" novalidate="novalidate" style="display: flex; flex-direction: column; gap: 12px">
+<label for="reg-name" style="font-size: 13px; font-weight: 600">Your name</label>
+<input id="reg-name" name="name" class="inp" type="text" autocomplete="name" required maxlength="100" placeholder="Your name" value="{{name}}" onChange="{{setName}}" style="box-sizing: border-box; height: 48px; border-radius: 10px; border: 1px solid var(--line-3); background: var(--surface); color: var(--ink); padding: 0 14px; font-size: 15px">
+<label for="reg-email" style="font-size: 13px; font-weight: 600">Email</label>
+<input id="reg-email" name="email" class="inp" type="email" autocomplete="email" required placeholder="you@email.com" value="{{email}}" onChange="{{setEmail}}" style="box-sizing: border-box; height: 48px; border-radius: 10px; border: 1px solid var(--line-3); background: var(--surface); color: var(--ink); padding: 0 14px; font-size: 15px">
+<label for="reg-password" style="font-size: 13px; font-weight: 600">Password</label>
+<input id="reg-password" name="password" class="inp" type="password" autocomplete="new-password" required minlength="8" placeholder="At least 8 characters" value="{{password}}" onChange="{{setPassword}}" style="box-sizing: border-box; height: 48px; border-radius: 10px; border: 1px solid var(--line-3); background: var(--surface); color: var(--ink); padding: 0 14px; font-size: 15px">
+<button type="submit" class="btn-primary" aria-disabled="{{busy}}" style="height: 50px; border: 0; border-radius: 12px; background: #FF7B00; color: #0E0E0E; font-family: inherit; font-size: 16px; font-weight: 600; cursor: pointer">{{emailSubmitLabel}}</button>
+</form>
+
+<div class="rise d3" style="display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--muted)"><span style="flex: 1; height: 1px; background: var(--line)"></span>or continue with Google<span style="flex: 1; height: 1px; background: var(--line)"></span></div>
 
 <button type="button" class="btn-google rise d3" onClick="{{google}}" style="height: 54px; border-radius: 12px; border: 1px solid var(--line-3); background: var(--surface); color: var(--ink); font-family: inherit; font-size: 16px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 12px">
 <span aria-hidden="true" style="width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line-3); display: flex; align-items: center; justify-content: center; font-family: 'Inter Tight', Inter, sans-serif; font-size: 13px; font-weight: 800">G</span>
@@ -180,7 +191,7 @@ class Component extends DCLogic {
       if (saved === 'dark' || saved === 'light') theme = saved;
       else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) theme = 'dark';
     } catch (err) {}
-    this.state = { theme: theme, done: false, googleBusy: false, err: '' };
+    this.state = { theme: theme, done: false, googleBusy: false, busy: false, name: '', email: '', password: '', err: '' };
   }
   componentDidMount() {
     window.SWAuthReady.then(async (A) => {
@@ -211,7 +222,32 @@ class Component extends DCLogic {
       },
       googleBusy: s.googleBusy,
       done: s.done, showForm: !s.done && !s.googleBusy,
+      busy: s.busy,
+      name: s.name, email: s.email, password: s.password,
+      emailSubmitLabel: s.busy ? 'Creating account…' : 'Create account with email',
+      setName: (e) => this.setState({ name: e.target.value, err: '' }),
+      setEmail: (e) => this.setState({ email: e.target.value, err: '' }),
+      setPassword: (e) => this.setState({ password: e.target.value, err: '' }),
       err: s.err || '',
+      registerEmail: async (e) => {
+        if (e && e.preventDefault) e.preventDefault();
+        if (this.state.busy) return;
+        const name = (this.state.name || '').trim();
+        const email = (this.state.email || '').trim();
+        const password = this.state.password || '';
+        if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8) {
+          this.setState({ err: 'Enter your name, a valid email, and a password of at least 8 characters.' });
+          return;
+        }
+        this.setState({ busy: true, err: '' });
+        const A = await window.SWAuthReady;
+        try {
+          await A.register({ name, email, password });
+          window.location.replace('/login?verify=1');
+        } catch (err) {
+          this.setState({ busy: false, err: A.friendlyError(err) });
+        }
+      },
       google: async () => {
         this.setState({ googleBusy: true, err: '' });
         const A = await window.SWAuthReady;

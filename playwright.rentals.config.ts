@@ -25,7 +25,8 @@ export default defineConfig({
     {
       command: "npx vite --host 127.0.0.1 --port 5174 --strictPort",
       url: "http://127.0.0.1:5174",
-      env: { VITE_USE_FIREBASE_EMULATORS: "true", SMARTWATTS_API_PROXY: "http://127.0.0.1:8001" },
+      // Emulator mode with a demo project; blank out any real project config from .env.
+      env: { VITE_USE_FIREBASE_EMULATORS: "true", SMARTWATTS_API_PROXY: "http://127.0.0.1:8001", VITE_FIREBASE_API_KEY: "", VITE_FIREBASE_AUTH_DOMAIN: "", VITE_FIREBASE_PROJECT_ID: "", VITE_FIREBASE_APP_ID: "" },
       reuseExistingServer: false,
       timeout: 60_000,
     },

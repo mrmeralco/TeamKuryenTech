@@ -3,13 +3,14 @@ import {
   getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail,
   verifyPasswordResetCode, confirmPasswordReset,
   EmailAuthProvider, linkWithCredential, updateProfile,
-  GoogleAuthProvider, signInWithPopup, linkWithPopup, signInWithCredential,
+  GoogleAuthProvider, signInWithPopup, linkWithPopup, signInWithCredential, connectAuthEmulator,
   setPersistence, browserLocalPersistence, browserSessionPersistence,
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
-import { firebaseConfig, DASHBOARD_URL } from "./firebase-config.js";
+import { firebaseConfig, authEmulatorUrl, DASHBOARD_URL } from "./firebase-config.js";
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+if (authEmulatorUrl && !auth.emulatorConfig) connectAuthEmulator(auth, authEmulatorUrl, { disableWarnings: true });
 export { DASHBOARD_URL };
 
 export function goToDashboard() { window.location.replace(DASHBOARD_URL); }

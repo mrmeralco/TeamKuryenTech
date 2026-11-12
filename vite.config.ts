@@ -97,7 +97,19 @@ export default defineConfig({
     }),
   ],
   server: {
-    proxy: { "/api": process.env.SMARTWATTS_API_PROXY ?? "http://127.0.0.1:8000" },
+    proxy: {
+      "/api": {
+        target: process.env.SMARTWATTS_API_PROXY ?? "http://127.0.0.1:8000",
+        configure(proxy) {
+          proxy.on("error", (_err, _req, res) => {
+            if ("writeHead" in res && !res.headersSent) {
+              res.writeHead(503, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ detail: "SmartWatts API backend is not reachable. Please ensure FastAPI is running on 127.0.0.1:8000." }));
+            }
+          });
+        },
+      },
+    },
   },
   build: {
     rollupOptions: {

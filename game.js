@@ -1,34 +1,10 @@
-// SmartWatts game layer: levels, quests, badges, mascot, confetti.
-// Loaded before app.js so its function declarations are available to the page renderers.
-// All progress is demo data stored in this browser only.
-
-const LEVEL_STEP = 100;
-const LEVEL_TITLES = ["Spark", "Bulb Buddy", "Watt Watcher", "Power Saver", "Grid Guardian", "Energy Hero", "Volt Legend"];
+// Watts Coins rewards: task-gated check-ins and bill-verified monthly reductions only.
 const CHART_COLORS = ["#ff7a00", "#ffc700", "#e6a000", "#a55300"];
 const DEFAULT_MONTHLY_TARGET = 320;
 const MONTHLY_USAGE = 342.18;
 const ENERGY_TARGET_KEY = "smartwatts-monthly-target";
-
-const QUESTS = [
-  { id: "daily", icon: "🌿", title: "Power down for an hour", desc: "Switch off unused lights and appliances for one hour.", pts: 20, color: "#ff7a00", tint: "#fff0dc" },
-  { id: "ac", icon: "❄️", title: "Set the AC to 25°C", desc: "A slightly warmer setting can trim cooling energy.", pts: 30, color: "#ffc700", tint: "#fff9db" },
-  { id: "standby", icon: "🔌", title: "Unplug standby gadgets", desc: "Chargers and TVs sip power even when idle.", pts: 15, color: "#a55300", tint: "#fff1bf" },
-  { id: "daylight", icon: "☀️", title: "Use daylight until 5 PM", desc: "Open the curtains and keep the lights off.", pts: 25, color: "#e6a000", tint: "#fff7db" },
-  { id: "laundry", icon: "🧺", title: "Wash a full load", desc: "Fewer, fuller loads use less energy overall.", pts: 20, color: "#ff7a00", tint: "#fff0dc" },
-];
-
-const VALID_QUEST_IDS = new Set(QUESTS.map(({ id }) => id));
-
-const BADGES = [
-  { icon: "🌱", name: "First Step", desc: "Complete your first quest", test: (g) => g.completed.length >= 1 },
-  { icon: "❄️", name: "Cool Operator", desc: "Finish the AC quest", test: (g) => g.completed.includes("ac") },
-  { icon: "🔌", name: "Phantom Hunter", desc: "Unplug standby gadgets", test: (g) => g.completed.includes("standby") },
-  { icon: "☀️", name: "Daylight Dynamo", desc: "Use daylight until 5 PM", test: (g) => g.completed.includes("daylight") },
-  { icon: "💡", name: "Energy Champion", desc: "Complete all 5 quests", test: (g) => g.completed.length >= QUESTS.length },
-  { icon: "🔥", name: "Consistency Star", desc: "Reach a 7-day streak", test: (g) => g.streak >= 7 },
-  { icon: "🚀", name: "Rocket Rank", desc: "Reach level 3", test: (g) => levelInfo(g.points).level >= 3 },
-  { icon: "👑", name: "Watt Royalty", desc: "Earn 300 points", test: (g) => g.points >= 300 },
-];
+const COIN_STORAGE_PREFIX = "smartwatts-coins";
+const CHECK_IN_REWARDS_CENTS = [50, 50, 50, 50, 75, 75, 150];
 
 const reducedMotion = () => window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -46,29 +22,180 @@ function setGameCallbacks(callbacks) {
 }
 
 // State (in-memory first so the demo still works when browser storage is blocked)
-let gameCache = null;
 let energyTargetCache = DEFAULT_MONTHLY_TARGET;
+let currentGameUser = "guest";
+const coinMemory = new Map();
 
-function getGameState() {
-  if (gameCache) return gameCache;
-  let loaded = null;
+function getManilaDateString(date = new Date()) {
   try {
-    loaded = JSON.parse(localStorage.getItem("smartwatts-game") || "null");
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila" }).format(date);
   } catch {
-    loaded = null;
+    return date.toISOString().slice(0, 10);
   }
-  const validPoints = loaded && Number.isFinite(loaded.points) && loaded.points >= 0;
-  const completed = Array.isArray(loaded && loaded.completed)
-    ? [...new Set(loaded.completed.filter((id) => VALID_QUEST_IDS.has(id)))]
-    : [];
-  gameCache = validPoints
-    ? {
-        points: Math.floor(loaded.points),
-        streak: Number.isFinite(loaded.streak) && loaded.streak >= 0 ? Math.floor(loaded.streak) : 0,
-        completed,
+}
+
+function setGameUser(userId) {
+  currentGameUser = userId || "guest";
+}
+
+function getCoinStorageKey() {
+  return currentGameUser === "guest" ? COIN_STORAGE_PREFIX : `${COIN_STORAGE_PREFIX}-${currentGameUser}`;
+}
+
+function addCalendarMonths(date, months = 3) {
+  const result = new Date(date);
+  const day = result.getUTCDate();
+  result.setUTCDate(1);
+  result.setUTCMonth(result.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)).getUTCDate();
+  result.setUTCDate(Math.min(day, lastDay));
+  return result;
+}
+
+function newCoinState() {
+  return { batches: [], ledger: [], lastCheckIn: null, streak: 0, claimedCycles: [] };
+}
+
+function saveCoinState(state) {
+  coinMemory.set(getCoinStorageKey(), state);
+  try { localStorage.setItem(getCoinStorageKey(), JSON.stringify(state)); } catch { /* session-only fallback */ }
+  return state;
+}
+
+function getCoinState({ reconcile = true } = {}) {
+  let state = null;
+  try { state = JSON.parse(localStorage.getItem(getCoinStorageKey()) || "null"); } catch { state = null; }
+  if (!state) state = coinMemory.get(getCoinStorageKey()) || null;
+  if (!state || !Array.isArray(state.batches) || !Array.isArray(state.ledger)) state = newCoinState();
+  state.lastCheckIn = typeof state.lastCheckIn === "string" ? state.lastCheckIn : null;
+  state.streak = Number.isInteger(state.streak) && state.streak > 0 ? state.streak : 0;
+  state.claimedCycles = Array.isArray(state.claimedCycles) ? state.claimedCycles : [];
+  if (reconcile) {
+    const now = new Date();
+    let changed = false;
+    for (const batch of state.batches) {
+      if (!Number.isInteger(batch.remainingCents) || batch.remainingCents <= 0) continue;
+      const expiresAt = new Date(batch.expiresAt);
+      if (!Number.isFinite(expiresAt.getTime())) continue;
+      if (now >= expiresAt) {
+        const expired = batch.remainingCents;
+        batch.remainingCents = 0;
+        state.ledger.unshift({ id: `expire-${batch.id}`, kind: "expiration", source: "Coins expiration (3-month validity ended)", amountCents: -expired, date: now.toISOString(), batchId: batch.id });
+        changed = true;
+        window.dispatchEvent(new CustomEvent("smartwatts-coins-expired", { detail: { amountCents: expired, expiresAt: batch.expiresAt } }));
+      } else if (!batch.expiryNoticeSent && now >= new Date(expiresAt.getTime() - 7 * 86400000)) {
+        batch.expiryNoticeSent = true;
+        changed = true;
+        window.dispatchEvent(new CustomEvent("smartwatts-coins-expiring", { detail: { amountCents: batch.remainingCents, expiresAt: batch.expiresAt } }));
       }
-    : { points: 120, streak: 3, completed: [] };
-  return gameCache;
+    }
+    if (changed) saveCoinState(state);
+  }
+  return state;
+}
+
+function coinBalanceCents(state = getCoinState()) {
+  return state.batches.reduce((total, batch) => total + Math.max(0, batch.remainingCents || 0), 0);
+}
+
+function formatCoins(cents) {
+  return (cents / 100).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function addCoinBatch(amountCents, source, date = new Date(), metadata = {}) {
+  if (!Number.isInteger(amountCents) || amountCents <= 0) throw new RangeError("Coin amount must be positive centavos.");
+  const state = getCoinState();
+  const earnedAt = new Date(date);
+  const batch = {
+    id: `coin-${earnedAt.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
+    amountCents,
+    remainingCents: amountCents,
+    earnedDate: earnedAt.toISOString(),
+    expiresAt: addCalendarMonths(earnedAt).toISOString(),
+    source,
+    expiryNoticeSent: false,
+    ...metadata,
+  };
+  state.batches.push(batch);
+  state.ledger.unshift({ id: batch.id, kind: "earning", source, amountCents, date: earnedAt.toISOString(), batchId: batch.id });
+  saveCoinState(state);
+  window.dispatchEvent(new CustomEvent("smartwatts-coins-earned", { detail: { amountCents, source } }));
+  return batch;
+}
+
+function coinSummaryHtml() {
+  const state = getCoinState();
+  const balance = coinBalanceCents(state);
+  const next = state.batches.filter((b) => b.remainingCents > 0).sort((a, b) => a.expiresAt.localeCompare(b.expiresAt))[0];
+  const language = gameUiCallbacks.language();
+  const expiryDate = next ? new Date(next.expiresAt).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }) : "";
+  const expiryNotice = next
+    ? language === "tl"
+      ? `${formatCoins(next.remainingCents)} coin(s) mag-e-expire sa ${expiryDate}`
+      : language === "tl-taglish"
+        ? `${formatCoins(next.remainingCents)} coin(s) mag-e-expire sa ${expiryDate}`
+        : `${formatCoins(next.remainingCents)} coin(s) expiring on ${expiryDate}`
+    : language === "tl" ? "Dito lalabas ang mga coin na nakuha mo." : "Your earned coins will appear here.";
+  return `<div class="coin-balance-card"><div><small>WATTS COINS BALANCE</small><strong>${formatCoins(balance)} Watts Coins <span>(₱${formatCoins(balance)})</span></strong></div><a href="#" data-action="coin-history" class="text-link">History →</a>
+    <p class="coin-expiration">${expiryNotice} <span class="coin-info" tabindex="0" title="Each earned coin batch is valid for exactly three calendar months from its earn date.">?</span></p>
+    <div class="coin-lock">🔒 Locked · Pending for Next Bill <span>Coins become usable only during your monthly bill payment or subscription renewal window.</span></div></div>`;
+}
+
+function checkIn(source) {
+  const habit = document.querySelector("#dailyHabitCheck");
+  if (!habit?.checked) {
+    gameUiCallbacks.toast("Complete today's energy-saving habit check before claiming your coins.");
+    return false;
+  }
+  const state = getCoinState();
+  const today = getManilaDateString();
+  if (state.lastCheckIn === today) {
+    gameUiCallbacks.toast("You already checked in today. Come back tomorrow!");
+    return false;
+  }
+  if (state.lastCheckIn) {
+    const days = Math.round((Date.parse(`${today}T00:00:00+08:00`) - Date.parse(`${state.lastCheckIn}T00:00:00+08:00`)) / 86400000);
+    state.streak = days === 1 ? state.streak : 0;
+  } else state.streak = 0;
+  const day = (state.streak % 7) + 1;
+  state.streak += 1;
+  state.lastCheckIn = today;
+  saveCoinState(state);
+  const amount = CHECK_IN_REWARDS_CENTS[day - 1];
+  addCoinBatch(amount, day === 7 ? "7-Day Streak Completed Bonus" : "Daily Check-In", new Date(), { checkInDay: day });
+  gameUiCallbacks.toast(`Check-in complete! +${formatCoins(amount)} Watts Coins.`);
+  gameUiCallbacks.render();
+  return true;
+}
+
+function awardMonthlyReduction(currentKwh, previousKwh, cycleId) {
+  const current = Number(currentKwh), previous = Number(previousKwh);
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || current >= previous) return 0;
+  const state = getCoinState();
+  if (state.claimedCycles.includes(cycleId)) return 0;
+  const amountCents = Math.min(1500, Math.round((previous - current) * 20));
+  if (amountCents <= 0) return 0;
+  state.claimedCycles.push(cycleId);
+  saveCoinState(state);
+  addCoinBatch(amountCents, `Monthly kWh Reduction Bonus · ${(previous - current).toFixed(2)} kWh Saved`, new Date(), { cycleId, previousKwh: previous, currentKwh: current });
+  return amountCents;
+}
+
+function redeemCoinBatches(amountCents, windowActive = false, destination = "bill") {
+  if (!windowActive) throw new Error("Watts Coins can only be redeemed during the bill payment or subscription renewal window.");
+  if (!Number.isInteger(amountCents) || amountCents <= 0) throw new RangeError("Enter a valid coin amount.");
+  const state = getCoinState();
+  if (amountCents > coinBalanceCents(state)) throw new RangeError("Not enough available Watts Coins.");
+  let remaining = amountCents;
+  for (const batch of state.batches.filter((b) => b.remainingCents > 0).sort((a, b) => a.earnedDate.localeCompare(b.earnedDate))) {
+    const used = Math.min(remaining, batch.remainingCents);
+    batch.remainingCents -= used;
+    remaining -= used;
+    if (!remaining) break;
+  }
+  state.ledger.unshift({ id: `redeem-${Date.now()}`, kind: "spending", source: destination === "subscription" ? "Redeemed with Subscription" : "Redeemed with Bill Payment", amountCents: -amountCents, date: new Date().toISOString() });
+  saveCoinState(state);
+  return amountCents;
 }
 
 function getMonthlyEnergyTarget() {
@@ -94,111 +221,23 @@ function saveMonthlyEnergyTarget(target) {
   }
 }
 
-function saveGame(game) {
-  gameCache = game;
-  try {
-    localStorage.setItem("smartwatts-game", JSON.stringify(game));
-  } catch {
-    /* storage unavailable: progress lasts for this page session */
-  }
-}
-
-function levelInfo(points) {
-  const level = Math.floor(points / LEVEL_STEP) + 1;
-  const into = points % LEVEL_STEP;
-  return { level, into, pct: (into / LEVEL_STEP) * 100, toNext: LEVEL_STEP - into, title: LEVEL_TITLES[Math.min(level - 1, LEVEL_TITLES.length - 1)] };
-}
-
-// Mascot: "Wattie", an original little spark
-function mascot(size = 120, cheer = false) {
-  return `
-    <svg class="mascot ${cheer ? "cheer" : ""}" width="${size}" height="${size}" viewBox="0 0 120 120" aria-hidden="true" focusable="false">
-      <ellipse cx="60" cy="113" rx="28" ry="5" fill="#1d1236" opacity=".22"/>
-      <path d="M68 3 46 30h12l-6 16 24-29H63Z" fill="#ff7a00" stroke="#2b2140" stroke-width="3.5" stroke-linejoin="round"/>
-      <circle cx="60" cy="73" r="38" fill="#ffc800" stroke="#2b2140" stroke-width="3.5"/>
-      <ellipse cx="44" cy="54" rx="10" ry="6" fill="#fff" opacity=".55" transform="rotate(-30 44 54)"/>
-      <g class="m-eyes">
-        <ellipse cx="46" cy="70" rx="6" ry="8.5" fill="#2b2140"/><circle cx="48" cy="67" r="2.4" fill="#fff"/>
-        <ellipse cx="74" cy="70" rx="6" ry="8.5" fill="#2b2140"/><circle cx="76" cy="67" r="2.4" fill="#fff"/>
-      </g>
-      <circle cx="36" cy="84" r="6" fill="#ff5c8a" opacity=".45"/><circle cx="84" cy="84" r="6" fill="#ff5c8a" opacity=".45"/>
-      <path d="M47 83q13 17 26 0Z" fill="#2b2140" stroke="#2b2140" stroke-width="3" stroke-linejoin="round"/>
-      <path d="M53 90q7 5 14 0q-7-4-14 0Z" fill="#ff5c8a"/>
-    </svg>`;
-}
-
-// Dashboard hero
-function weekRow(game) {
-  const days = gameUiCallbacks.language() === "tl"
-    ? ["L", "M", "M", "H", "B", "S", "L"]
-    : ["M", "T", "W", "T", "F", "S", "S"];
-  const today = (new Date().getDay() + 6) % 7;
-  const doneToday = game.completed.includes("daily");
-  const prior = game.streak - (doneToday ? 1 : 0);
-  return `<div class="week" role="img" aria-label="${game.streak} day streak">${days
-    .map((label, i) => {
-      let state = "future";
-      if (i === today) state = doneToday ? "done" : "today";
-      else if (i < today) state = today - i <= prior ? "done" : "missed";
-      const mark = state === "done" ? "🔥" : state === "today" ? "⚡" : "";
-      return `<div class="day ${state}"><span>${mark}</span><small>${label}</small></div>`;
-    })
-    .join("")}</div>`;
-}
-
-function questRow(q, game) {
-  const done = game.completed.includes(q.id);
-  return `
-    <div class="quest ${done ? "done" : ""}" style="--c:${q.color};--t:${q.tint}">
-      <span class="quest-icon">${q.icon}</span>
-      <div class="quest-body"><b>${q.title}</b><p>${q.desc}</p></div>
-      <button class="btn ${done ? "btn-complete" : "btn-go"}" ${done ? "disabled" : `data-quest="${q.id}"`}>${done ? "✓ Done" : `Claim +${q.pts}`}</button>
-    </div>`;
-}
-
 function gamificationCard() {
-  const game = getGameState();
-  const info = levelInfo(game.points);
-  const next = QUESTS.find((q) => !game.completed.includes(q.id));
-  const left = QUESTS.length - game.completed.length;
-  const speech = next ? `${left} quest${left === 1 ? "" : "s"} left. Let's go!` : "All quests done. You're glowing!";
-
-  const side = next
-    ? `<div class="game-challenge">
-         <div class="challenge-top"><span class="challenge-tag">⚡ NEXT QUEST</span><span class="reward-pill">+${next.pts} XP</span></div>
-         <div class="challenge-body"><span class="challenge-icon" style="--c:${next.color};--t:${next.tint}">${next.icon}</span><div><h3>${next.title}</h3><p>${next.desc}</p></div></div>
-         <button class="btn btn-go" data-quest="${next.id}">Complete quest</button>
-       </div>`
-    : `<div class="game-challenge all-done">
-         <div class="challenge-top"><span class="challenge-tag">🎉 QUESTS CLEARED</span></div>
-         <div class="challenge-body"><span class="challenge-icon" style="--c:#ffc700;--t:#fff8e8">🏅</span><div><h3>Perfect run!</h3><p>Come back tomorrow for fresh quests and keep your streak alive.</p></div></div>
-         <button class="btn btn-outline" data-page="rewards">See my badges</button>
-       </div>`;
-
+  const state = getCoinState();
+  const checkedToday = state.lastCheckIn === getManilaDateString();
+  const completedInCycle = checkedToday ? ((state.streak - 1) % 7) + 1 : state.streak % 7;
+  const upcomingDay = checkedToday ? (completedInCycle === 7 ? 1 : completedInCycle + 1) : (completedInCycle === 0 ? 1 : completedInCycle + 1);
+  const labels = ["Today", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"];
+  const tracker = labels.map((label, index) => {
+    const done = checkedToday ? index < completedInCycle : index < completedInCycle;
+    const today = index === upcomingDay - 1 && !checkedToday;
+    const completedToday = checkedToday && index === completedInCycle - 1;
+    return `<div class="coin-day ${done ? "done" : ""} ${today || completedToday ? "today" : ""}"><span>${done ? "✓" : `+${formatCoins(CHECK_IN_REWARDS_CENTS[index])}`}</span><small>${today || completedToday ? "Today" : label}</small></div>`;
+  }).join("");
   return `
-    <section class="game-card" aria-label="Energy saving progress">
-      <div class="game-main">
-        <div class="hero-row">
-          <div class="mascot-wrap">${mascot(112, !next)}<span class="speech">${speech}</span></div>
-          <div class="hero-text">
-            <div class="game-eyebrow">LEVEL ${info.level} · ${info.title.toUpperCase()}</div>
-            <h2>Small changes. <span>Big savings.</span></h2>
-            <div class="xp" role="progressbar" aria-valuemin="0" aria-valuemax="${LEVEL_STEP}" aria-valuenow="${info.into}" aria-label="Experience to next level">
-              <div class="xp-fill" style="width:${Math.max(info.pct, 6)}%"></div>
-              <span class="xp-label">${info.into} / ${LEVEL_STEP} XP</span>
-            </div>
-            <small class="xp-next">${info.toNext} XP to level ${info.level + 1}</small>
-          </div>
-        </div>
-        <div class="game-stats">
-          <div><span>🏆</span><strong>${game.points}</strong><small>Watts points</small></div>
-          <div><span>🔥</span><strong>${game.streak}</strong><small>Day streak</small></div>
-          <div><span>✅</span><strong>${game.completed.length}/${QUESTS.length}</strong><small>Quests done</small></div>
-        </div>
-        ${weekRow(game)}
-      </div>
-      ${side}
-      <a class="game-link" href="#" data-page="goals">All quests →</a>
+    <section class="game-card coin-checkin-card" aria-label="Daily Watts Coins check-in">
+      <div class="coin-checkin-head"><div><small>7-DAY DAILY CHECK-IN STREAK</small><h2>Small habits, real rewards.</h2><p>Earn 5.00 Watts Coins (₱5.00) for a complete seven-day cycle.</p></div><button class="btn btn-outline" data-page="rewards">View Watts Coins</button></div>
+      <div class="coin-streak-tracker">${tracker}</div>
+      <div class="coin-checkin-footer"><label><input id="dailyHabitCheck" type="checkbox" ${checkedToday ? "disabled" : ""}> I completed one energy-saving habit today.</label><button class="btn btn-primary" data-action="checkin" disabled>${checkedToday ? "Checked in today" : "Check in to get coins"}</button></div>
     </section>`;
 }
 
@@ -219,8 +258,6 @@ function ring(pct, label, sub) {
 }
 
 function goalsPage() {
-  const game = getGameState();
-  const info = levelInfo(game.points);
   const target = getMonthlyEnergyTarget();
   const used = MONTHLY_USAGE;
   const pct = Math.round((used / target) * 100);
@@ -235,33 +272,29 @@ function goalsPage() {
   const targetFoot = used > target
     ? `${difference} kWh above target`
     : `${Math.max(0, target - used).toFixed(2)} kWh remaining`;
-  const doneCount = game.completed.length;
   return `
-    ${gameUiCallbacks.pageHead("Your energy goals", "Set realistic targets and celebrate your progress.")}
+    ${gameUiCallbacks.pageHead("Your energy goals", "Set realistic targets and build lower-energy habits.")}
     <div class="grid stats">
       ${gameUiCallbacks.stat("target", "Monthly Target", targetLabel, "kWh", "Your chosen goal", "")}
       ${gameUiCallbacks.stat("chart-no-axes-column-increasing", "Used This Month", MONTHLY_USAGE.toFixed(2), "kWh", targetFoot, "")}
       ${gameUiCallbacks.stat("zap", "Daily Target", (target / 31).toFixed(1), "kWh", "Average daily goal", "")}
-      ${gameUiCallbacks.stat("trophy", "Watts Points", String(game.points), "pts", `Level ${info.level} · ${info.title}`, "")}
+      ${gameUiCallbacks.stat("trophy", "Watts Coins", formatCoins(coinBalanceCents()), "coins", "₱1.00 per coin", "")}
     </div>
     <div class="two-panels goal-panels">
       ${gameUiCallbacks.panel(
         "Monthly energy target",
-        `<div class="goal-ring-row">
-           ${ring(pct, percentageLabel, "of target")}
-           <div class="goal-copy">
-             <strong>${MONTHLY_USAGE.toFixed(2)} / ${targetLabel} kWh</strong>
-             <p class="stat-foot">${usageMessage}</p>
-             <span class="reward-pill">Tip: AC quest = +30 XP</span>
+        `<div class="goal-target-outline">
+           <div class="goal-ring-row">
+             ${ring(pct, percentageLabel, "of target")}
+             <div class="goal-copy">
+               <strong>${MONTHLY_USAGE.toFixed(2)} / ${targetLabel} kWh</strong>
+               <p class="stat-foot">${usageMessage}</p>
+               <span class="reward-pill">Daily check-ins earn up to 1.50 coins on Day 7</span>
+             </div>
            </div>
          </div>`,
       )}
-      ${gameUiCallbacks.panel(
-        "Your next milestone",
-        `<div class="milestone"><span class="milestone-icon">🌟</span><div><b>Energy-aware household</b><p class="stat-foot">Complete all ${QUESTS.length} quests to unlock the Energy Champion badge.</p></div></div>
-         <div class="goal-track"><span style="width:${(doneCount / QUESTS.length) * 100}%"></span></div>
-         <p class="stat-foot">${doneCount} of ${QUESTS.length} quests completed</p>`,
-      )}
+      ${gameUiCallbacks.panel("Earn Watts Coins", `<p>Only two earning sources are available: daily check-ins and a verified decrease in monthly kWh.</p><button class="btn btn-outline" data-page="rewards">View earning options</button>`)}
     </div>
     ${gameUiCallbacks.panel(
       "Adjust your monthly target",
@@ -274,104 +307,37 @@ function goalsPage() {
          <small>Choose a monthly target between 50 and 2,000 kWh.</small>
        </form>`,
     )}
-    <div class="game-challenges-list">
-      ${gameUiCallbacks.panel("Today's quests", `<div class="quest-list">${QUESTS.map((q) => questRow(q, game)).join("")}</div>`, `<span class="reward-pill">${doneCount}/${QUESTS.length}</span>`)}
-    </div>`;
+    `;
 }
 
 function rewardsPage() {
-  const game = getGameState();
-  const info = levelInfo(game.points);
-  const earned = BADGES.filter((b) => b.test(game)).length;
+  const state = getCoinState();
+  const historyTab = window.__smartWattsCoinTab || "all";
+  const records = state.ledger.filter((item) => historyTab === "all" || (historyTab === "earning" ? item.kind === "earning" : item.kind !== "earning"));
+  const history = records.length ? records.map((item) => {
+    const expired = item.kind === "expiration";
+    const positive = item.amountCents > 0;
+    const value = `${positive ? "+" : "-"}${formatCoins(Math.abs(item.amountCents))}`;
+    const date = new Date(item.date).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" });
+    const batch = item.kind === "earning" ? state.batches.find((b) => b.id === item.batchId) : null;
+    const detail = item.source === "Daily Check-In" && batch ? `Daily Check-In (expires ${new Date(batch.expiresAt).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })})` : item.source;
+    return `<div class="coin-ledger-row ${expired ? "expired" : ""}"><span class="coin-ledger-icon">◉</span><div><b>${detail}</b><small>${date}</small></div><strong class="${positive ? "positive" : "negative"}">${value}</strong></div>`;
+  }).join("") : `<p class="empty-note">No coin transactions yet. Complete a daily check-in or save a lower monthly bill.</p>`;
   return `
-    ${gameUiCallbacks.pageHead("Rewards & badges", "Every energy-smart choice deserves a little celebration.")}
-    <div class="rewards-hero">
-      ${mascot(96, true)}
-      <div class="rewards-copy">
-        <small>YOUR WATTS POINTS</small>
-        <strong>${game.points}</strong>
-        <p>Level ${info.level} · ${info.title} · ${info.toNext} XP to level ${info.level + 1}</p>
-        <div class="xp slim"><div class="xp-fill" style="width:${Math.max(info.pct, 6)}%"></div></div>
-      </div>
-    </div>
-    ${gameUiCallbacks.panel(
-      "Badge collection",
-      `<div class="badge-grid">${BADGES.map((b) => {
-        const on = b.test(game);
-        return `<div class="badge ${on ? "earned" : "locked"}"><div class="badge-medal">${b.icon}</div><b>${b.name}</b><p>${b.desc}</p><span class="badge-state ${on ? "earned" : "locked"}">${on ? "✓ Unlocked" : "🔒 Locked"}</span></div>`;
-      }).join("")}</div>`,
-      `<span class="reward-pill">${earned}/${BADGES.length} earned</span>`,
-    )}
-    <p class="about-note">Points and badges are demonstration features stored in this browser only. They have no cash value.</p>`;
-}
-
-// Celebrations
-function confetti(x, y) {
-  if (reducedMotion()) return;
-  const colors = ["#ff7a00", "#ffc700", "#e6a000", "#a55300"];
-  for (let i = 0; i < 40; i += 1) {
-    const piece = document.createElement("i");
-    piece.className = "confetti";
-    piece.style.left = `${x}px`;
-    piece.style.top = `${y}px`;
-    piece.style.setProperty("--c", colors[i % colors.length]);
-    piece.style.setProperty("--dx", `${(Math.random() - 0.5) * 380}px`);
-    piece.style.setProperty("--up", `${-90 - Math.random() * 150}px`);
-    piece.style.setProperty("--down", `${60 + Math.random() * 170}px`);
-    piece.style.setProperty("--rot", `${(Math.random() - 0.5) * 900}deg`);
-    piece.style.animationDelay = `${Math.random() * 90}ms`;
-    document.body.appendChild(piece);
-    setTimeout(() => piece.remove(), 1500);
-  }
-}
-
-function floatText(x, y, text) {
-  if (reducedMotion()) return;
-  const el = document.createElement("div");
-  el.className = "pop";
-  el.textContent = text;
-  el.style.left = `${x}px`;
-  el.style.top = `${y}px`;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 1100);
-}
-
-function claimQuest(id, source) {
-  const quest = QUESTS.find((q) => q.id === id);
-  const game = getGameState();
-  if (!quest || game.completed.includes(id)) return;
-
-  const before = levelInfo(game.points).level;
-  game.points += quest.pts;
-  game.completed.push(id);
-  if (id === "daily") game.streak += 1;
-  saveGame(game);
-  const after = levelInfo(game.points).level;
-
-  const box = source.getBoundingClientRect();
-  const x = box.left + box.width / 2;
-  const y = box.top + box.height / 2;
-  confetti(x, y);
-  floatText(x, y - 20, `+${quest.pts} XP`);
-
-  document.body.classList.add("no-enter");
-  gameUiCallbacks.render();
-  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("no-enter")));
-
-  const unlocked = game.completed.length === QUESTS.length ? " All quests cleared!" : "";
-  gameUiCallbacks.toast(after > before ? `🎉 Level up! You're now level ${after}: ${levelInfo(game.points).title}` : `Quest complete! +${quest.pts} XP.${unlocked}`);
+    ${gameUiCallbacks.pageHead("Watts Coins", "Earn coins through daily check-ins and verified monthly energy savings.", `<button class="btn btn-outline" data-page="bills">Earn More Coins</button>`)}
+    ${coinSummaryHtml()}
+    ${gameUiCallbacks.panel("Monthly kWh Reduction Bonus", `<p>Save at least 1 kWh against your previous saved bill to earn ₱0.20 per kWh reduced, up to 15.00 Watts Coins per billing cycle. Review and save your monthly bill to compare usage.</p><button class="btn btn-outline" data-page="bills">Upload / review monthly bill</button>`)}
+    ${gameUiCallbacks.panel("My Watts Coins", `<div class="coin-tabs" role="tablist"><button data-coin-tab="all" class="${historyTab === "all" ? "active" : ""}">ALL HISTORY</button><button data-coin-tab="earning" class="${historyTab === "earning" ? "active" : ""}">EARNING</button><button data-coin-tab="spending" class="${historyTab === "spending" ? "active" : ""}">SPENDING</button></div><div class="coin-ledger" id="coin-ledger">${history}</div>`, `<span class="reward-pill">${formatCoins(coinBalanceCents(state))} available · locked</span>`)}
+    <p class="about-note">Coin balance and expiry are stored in this browser for this account. Real bill payment, subscription renewal, and external utility verification are not connected in this demo.</p>`;
 }
 
 // Chrome: top chips, mobile tab highlight, count-up numbers
 function renderGameChrome(currentPage) {
-  const game = getGameState();
-  const info = levelInfo(game.points);
+  const coins = coinBalanceCents();
   const chips = document.querySelector("#chips");
   if (chips) {
     chips.innerHTML = `
-      <button class="chip chip-streak" data-page="goals" aria-label="${game.streak} day streak">🔥 <b>${game.streak}</b></button>
-      <button class="chip chip-xp" data-page="rewards" aria-label="${game.points} points">⚡ <b>${game.points}</b></button>
-      <button class="chip chip-lvl" data-page="rewards" aria-label="Level ${info.level}">LV <b>${info.level}</b></button>`;
+      <button class="chip chip-xp" data-page="rewards" aria-label="${formatCoins(coins)} Watts Coins">🪙 <b>${formatCoins(coins)}</b></button>`;
   }
   document.querySelectorAll(".mobile-tabbar [data-page]").forEach((button) => {
     const on = button.dataset.page === currentPage;
@@ -405,14 +371,22 @@ function animateNumbers() {
 }
 
 export {
+  addCalendarMonths,
+  addCoinBatch,
   animateNumbers,
+  awardMonthlyReduction,
   CHART_COLORS,
-  claimQuest,
+  checkIn,
   gamificationCard,
   getMonthlyEnergyTarget,
+  getCoinState,
+  coinBalanceCents,
+  formatCoins,
   goalsPage,
+  redeemCoinBatches,
   renderGameChrome,
   rewardsPage,
   saveMonthlyEnergyTarget,
   setGameCallbacks,
+  setGameUser,
 };

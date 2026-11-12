@@ -50,6 +50,7 @@ test("register appliances, simulate savings, and save a plan", async ({ page }) 
   await bill.getByLabel("Period end").fill("2026-09-30");
   await bill.getByLabel("Billed kWh").fill("200");
   await bill.getByLabel("Total current charges (₱)").fill("2,450.00");
+  await bill.getByLabel(/I reviewed this bill or statement/).check();
   await bill.getByRole("button", { name: "Save bill" }).click();
   await expect(page.locator('[data-slot="bills"]')).toContainText("₱2,450.00");
   await expect(page.locator('[data-slot="bill-rate"]')).toContainText("₱12.25");
@@ -230,6 +231,7 @@ test("itemized bill feeds a per-category savings estimate with stated assumption
   await bill.getByLabel("Period end").fill("2026-10-11");
   await bill.getByLabel("Billed kWh").fill("200");
   await bill.getByLabel("Total current charges (₱)").fill("2,400.00");
+  await bill.getByLabel(/I reviewed this bill or statement/).check();
   await bill.locator("summary", { hasText: "Charge breakdown" }).click();
   await bill.getByLabel("Generation").fill("1,500.00");
   await bill.getByLabel("Distribution").fill("600.00");
@@ -263,6 +265,7 @@ test("consumption calendar shows recorded billing periods without inventing dail
     await bill.getByLabel("Period end").fill(end);
     await bill.getByLabel("Billed kWh").fill(kwh);
     await bill.getByLabel("Total current charges (₱)").fill(amount);
+    await bill.getByLabel(/I reviewed this bill or statement/).check();
     await bill.getByRole("button", { name: "Save bill" }).click();
     await expect(page.locator('[data-slot="bills"]')).toContainText(`₱${amount}`);
   }

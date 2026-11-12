@@ -7,7 +7,7 @@ import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { deleteDoc, doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDoc, getDocs, serverTimestamp, setDoc } from "firebase/firestore";
 import { ref, uploadString, getBytes } from "firebase/storage";
 
 let env: RulesTestEnvironment;
@@ -58,13 +58,18 @@ describe("Tier 1 personal data isolation", () => {
   it("blocks landlords, other tenants, and anonymous visitors from private tenant data", async () => {
     await env.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(context.firestore(), "users/tenant/appliances/a1"), appliance);
+      await setDoc(doc(context.firestore(), "users/tenant/bills/b1"), { periodStart: "2026-09-01", periodEnd: "2026-09-30", kwh: 1, amountCentavos: 1, source: "manual" });
+      await setDoc(doc(context.firestore(), "users/tenant/readings/r1"), { kwh: 12 });
       await setDoc(doc(context.firestore(), "users/tenant/savingsPlans/p1"), { title: "Plan" });
     });
     const landlord = env.authenticatedContext("landlord").firestore();
     await assertFails(getDoc(doc(landlord, "users/tenant/appliances/a1")));
+    await assertFails(getDoc(doc(landlord, "users/tenant/bills/b1")));
+    await assertFails(getDoc(doc(landlord, "users/tenant/readings/r1")));
     await assertFails(getDoc(doc(landlord, "users/tenant/savingsPlans/p1")));
     await assertFails(setDoc(doc(landlord, "users/tenant/appliances/a2"), appliance));
     await assertFails(deleteDoc(doc(landlord, "users/tenant/appliances/a1")));
+    await assertFails(getDocs(collection(landlord, "users/tenant/appliances")));
     const unauthenticated = env.unauthenticatedContext().firestore();
     await assertFails(getDoc(doc(unauthenticated, "users/tenant/appliances/a1")));
   });
@@ -83,6 +88,57 @@ describe("Tier 1 personal data isolation", () => {
     await assertFails(setDoc(doc(alice, "users/alice/readings/r1"), { kwh: 0, createdAt: serverTimestamp() }));
     // Users cannot write a global tier/profile document that grants Rentals access.
     await assertFails(setDoc(doc(alice, "users/alice"), { tier: 2 }));
+  });
+
+  it("preserves tested monthly energy validation for appliance labels", async () => {
+    const alice = env.authenticatedContext("alice").firestore();
+    const testedEnergyAppliance = {
+      name: "Refrigerator", category: "refrigeration", watts: 0, quantity: 1,
+      hoursPerDay: 24, daysPerWeek: 7, testedKwhMonth: 26.1,
+      energyEfficiencyRating: 253, labelType: "ENERGY_EFFICIENCY",
+      consumptionBasis: "tested_monthly", createdAt: serverTimestamp(),
+    };
+    await assertSucceeds(setDoc(doc(alice, "users/alice/appliances/label"), testedEnergyAppliance));
+    await assertFails(setDoc(doc(alice, "users/alice/appliances/no-energy"), {
+      ...testedEnergyAppliance, testedKwhMonth: 0,
+    }));
+    await assertFails(setDoc(doc(alice, "users/alice/appliances/too-much-energy"), {
+      ...testedEnergyAppliance, testedKwhMonth: 5000,
+    }));
+  });
+});
+
+describe("User profile", () => {
+  it("lets a user create and update their profile fields only", async () => {
+    const alice = env.authenticatedContext("alice").firestore();
+    await assertSucceeds(setDoc(doc(alice, "users/alice"), { displayName: "Alice", createdAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(doc(alice, "users/alice"), { preferredLanguage: "ja", updatedAt: serverTimestamp() }, { merge: true }));
+    await assertSucceeds(setDoc(doc(alice, "users/alice"), { preferredLanguage: "tl-taglish", displayName: "Alice" }, { merge: true }));
+    await assertSucceeds(setDoc(doc(alice, "users/alice"), {
+      dwellingType: "condo_apartment", utilityRecordType: "condo_soa", baselineKwh: 235.5, baselinePeriodEnd: "2026-10-31",
+    }, { merge: true }));
+    await assertSucceeds(getDoc(doc(alice, "users/alice")));
+    await assertSucceeds(setDoc(doc(alice, "users/alice"), { language: "en" }, { merge: true }));
+    const bob = env.authenticatedContext("bob").firestore();
+    await assertFails(getDoc(doc(bob, "users/alice")));
+    await assertFails(setDoc(doc(bob, "users/alice"), { preferredLanguage: "en" }));
+    await assertFails(getDocs(collection(bob, "users")));
+    await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), "users/alice")));
+  });
+
+  it("cannot carry a tier, role, subscription, or other privilege field, and cannot be deleted by clients", async () => {
+    const alice = env.authenticatedContext("alice").firestore();
+    for (const extra of [{ tier: 2 }, { role: "owner" }, { subscription: "active" }, { platformAdmin: true }, { email: "a@b.co" }]) {
+      await assertFails(setDoc(doc(alice, "users/alice"), { preferredLanguage: "en", ...extra }));
+    }
+    await assertFails(setDoc(doc(alice, "users/alice"), { preferredLanguage: "not a language" }));
+    await assertFails(setDoc(doc(alice, "users/alice"), { language: "not a language" }));
+    await assertFails(setDoc(doc(alice, "users/alice"), { updatedAt: "not a timestamp" }));
+    await assertFails(setDoc(doc(alice, "users/alice"), { dwellingType: "landlord" }));
+    await assertFails(setDoc(doc(alice, "users/alice"), { baselineKwh: 200 }));
+    await assertFails(setDoc(doc(alice, "users/alice"), { dwellingType: "homeowner", utilityRecordType: "condo_soa" }));
+    await assertSucceeds(setDoc(doc(alice, "users/alice"), { preferredLanguage: "en" }));
+    await assertFails(deleteDoc(doc(alice, "users/alice")));
   });
 });
 
@@ -111,9 +167,12 @@ describe("Tier 2 rental data is backend-only", () => {
   const rentalPaths = [
     "properties/p1",
     "properties/p1/units/u1",
+    "properties/p1/occupancies/o1",
+    "properties/p1/meterAssignments/a1",
     "properties/p1/meters/m1",
     "properties/p1/meterReadings/r1",
     "properties/p1/utilityBills/b1",
+    "properties/p1/utilityBills/b1/documents/d1",
     "properties/p1/statements/s1",
     "properties/p1/auditLogs/l1",
     "memberships/p1_owner",
@@ -131,6 +190,8 @@ describe("Tier 2 rental data is backend-only", () => {
         await assertFails(getDoc(doc(db, path)));
         await assertFails(setDoc(doc(db, path), { ownerUid: uid }));
       }
+      const rentalCollections = new Set(rentalPaths.map((path) => path.slice(0, path.lastIndexOf("/"))));
+      for (const path of rentalCollections) await assertFails(getDocs(collection(db, path)));
     }
   });
 

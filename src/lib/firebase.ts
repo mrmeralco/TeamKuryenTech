@@ -14,6 +14,21 @@ import {
 // "demo-" project, which can never reach real Firebase resources.
 export const usingEmulators = import.meta.env.VITE_USE_FIREBASE_EMULATORS === "true";
 
+function emulatorPort(value: string | undefined, fallback: number, name: string): number {
+  const port = value === undefined || value === "" ? fallback : Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new RangeError(`${name} must be a valid TCP port.`);
+  }
+  return port;
+}
+
+const emulatorHost = import.meta.env.VITE_FIREBASE_EMULATOR_HOST || "127.0.0.1";
+const authEmulatorPort = emulatorPort(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT, 9099, "Auth emulator port");
+const firestoreEmulatorPort = emulatorPort(import.meta.env.VITE_FIREBASE_FIRESTORE_EMULATOR_PORT, 8080, "Firestore emulator port");
+if (usingEmulators && !["127.0.0.1", "localhost", "::1"].includes(emulatorHost)) {
+  throw new Error("Firebase emulators must use a loopback host.");
+}
+
 const config = usingEmulators
   ? {
       apiKey: "demo-api-key",
@@ -44,8 +59,8 @@ if (firebaseConfigured) {
           : persistentLocalCache({ tabManager: persistentSingleTabManager(undefined) }),
       });
   if (usingEmulators && !existingApp) {
-    connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
-    connectFirestoreEmulator(firestore, "127.0.0.1", 8080);
+    connectAuthEmulator(auth, `http://${emulatorHost.includes(":") ? `[${emulatorHost}]` : emulatorHost}:${authEmulatorPort}`, { disableWarnings: true });
+    connectFirestoreEmulator(firestore, emulatorHost, firestoreEmulatorPort);
   }
 }
 

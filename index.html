@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="visual-upgrade.css">
   <link rel="stylesheet" href="fun.css">
   <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="coins.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -54,8 +55,8 @@
           <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">🌙</button>
         </div>
         <button class="provider"><span class="meralco-mark">M</span> MERALCO <span class="provider-chevron"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></button>
-        <button class="icon-button" data-page="notifications" aria-label="Notifications"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><i class="notification-dot">3</i></button>
-        <button class="avatar" data-page="account">RJ</button>
+        <div class="notification-wrap" id="notificationWrap"><button class="icon-button" aria-label="Notifications" id="notificationsBtn" aria-expanded="false" aria-controls="notificationPopover"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><i class="notification-dot" id="notificationBadge" style="display:none">0</i></button><div class="notification-popover" id="notificationPopover" hidden></div></div>
+        <button class="avatar" data-page="account" id="userAvatar">RJ</button>
         <button class="icon-button" id="logoutButton" type="button" aria-label="Log out" title="Log out"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></button>
       </div>
     </header>
@@ -66,11 +67,12 @@
 <nav class="mobile-tabbar" aria-label="Mobile navigation">
   <button data-page="dashboard" aria-label="Dashboard"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg><small>Home</small></button>
   <button data-page="realtime" aria-label="Usage patterns"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><small>Patterns</small></button>
-  <button data-page="goals" aria-label="Energy goals"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg><small>Quests</small></button>
+  <button data-page="goals" aria-label="Energy goals"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg><small>Goals</small></button>
   <button data-page="rewards" aria-label="Rewards"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 6H4v2a4 4 0 0 0 4 4M17 6h3v2a4 4 0 0 1-4 4"/></svg><small>Rewards</small></button>
   <button id="mobileMore" aria-label="Open menu"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg><small>More</small></button>
 </nav>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="export-notice" id="exportNotice" role="status" aria-live="polite" hidden></div>
 <div id="chat-root"></div>
 <script type="module" src="/src/lib/sessionGuard.ts"></script>
 <script type="module" src="/app.js"></script>

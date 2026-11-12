@@ -1,13 +1,18 @@
 import {
   animateNumbers,
-  claimQuest,
+  awardMonthlyReduction,
   CHART_COLORS,
+  checkIn,
+  coinBalanceCents,
+  formatCoins,
   gamificationCard,
+  getCoinState,
   goalsPage,
   saveMonthlyEnergyTarget,
   renderGameChrome,
   rewardsPage,
   setGameCallbacks,
+  setGameUser,
 } from "./game.js";
 import { getLanguage, getSupportedLanguages, loadSupportedLanguages, setLanguage, translateText, translateTree } from "./i18n.js";
 import {
@@ -19,6 +24,7 @@ import { calendarActions, calendarPages } from "./calendar-view.js";
 import { getWorkspace, loadWorkspaces, setWorkspace, workspaceOptions } from "./workspace.js";
 import { currentAccount, onAccountChange } from "./src/lib/account.ts";
 import { escapeHtml } from "./src/lib/format.ts";
+import { listBills, loadPreferredLanguage, savePreferredLanguage } from "./src/lib/personal/store.ts";
 import { auth } from "./src/lib/firebase.ts";
 
 // Signed-in user's profile (Google name/photo or the name entered at registration).
@@ -71,7 +77,7 @@ const personalNavigation = [
     items: [
       ["simulator", "trending-down", "Savings Simulator"],
       ["goals", "target", "Energy Goals"],
-      ["rewards", "trophy", "Rewards & Badges"],
+      ["rewards", "trophy", "Watts Coins"],
     ],
   },
   {
@@ -104,6 +110,7 @@ const ownerNavigation = [
     label: "PROPERTY",
     items: [
       ["rental-overview", "layout-dashboard", "Overview"],
+      ["rental-analytics", "chart-no-axes-column-increasing", "Property Analytics"],
       ["rental-units", "users-round", "Units & Tenants"],
       ["rental-meters", "gauge", "Meters & Allocation"],
       ["rental-readings", "activity", "Meter Readings"],
@@ -175,6 +182,7 @@ const pageTitles = {
   support: ["Help & Support", "Find answers or contact the SmartWatts support team."],
   about: ["About Team", "Meet the people and purpose behind SmartWatts."],
 };
+pageTitles.rewards = ["Watts Coins", "Earn coins through daily check-ins and verified monthly energy savings."];
 for (const [id, page] of Object.entries(modulePages)) pageTitles[id] = [page.title, page.subtitle];
 
 const devices = [
@@ -193,12 +201,273 @@ const historyRecords = [
   ["Dec 1 – Dec 31, 2025", "355.62 kWh", "₱1,304.50", "Paid"],
 ];
 
-const notificationItems = [
-  ["triangle-alert", "Sample Usage Alert", "Sample: this month's usage is 12% higher than last month.", "9:15 AM"],
-  ["receipt-text", "Bill is Ready", "Your May 2026 bill is now available.", "Yesterday"],
-  ["circle-check", "Payment Received", "Thank you! Your payment of ₱1,150.00 was successful.", "Apr 15"],
-  ["receipt-text", "Bill Reminder", "Upload your latest bill to keep your history up to date.", "Apr 12"],
+let currentNotificationUser = "guest";
+let notificationsCache = null;
+
+function setNotificationUser(userId) {
+  const next = userId || "guest";
+  if (currentNotificationUser !== next) {
+    currentNotificationUser = next;
+    notificationsCache = null;
+    updateNotificationBadge();
+  }
+}
+
+function getNotificationsStorageKey() {
+  return currentNotificationUser === "guest"
+    ? "smartwatts-notifications-guest"
+    : `smartwatts-notifications-${currentNotificationUser}`;
+}
+
+const defaultNotifications = [
+  { id: "notif-seed-1", icon: "triangle-alert", title: "Sample Usage Alert", message: "Sample: this month's usage is 12% higher than last month.", time: "9:15 AM", timestamp: Date.now() - 3600000, read: false },
+  { id: "notif-seed-2", icon: "receipt-text", title: "Bill is Ready", message: "Your May 2026 bill is now available.", time: "Yesterday", timestamp: Date.now() - 86400000, read: false },
+  { id: "notif-seed-3", icon: "circle-check", title: "Payment Received", message: "Thank you! Your payment of ₱1,150.00 was successful.", time: "Apr 15", timestamp: Date.now() - 172800000, read: false },
+  { id: "notif-seed-4", icon: "receipt-text", title: "Bill Reminder", message: "Upload your latest bill to keep your history up to date.", time: "Apr 12", timestamp: Date.now() - 259200000, read: true },
 ];
+
+function getNotifications() {
+  if (notificationsCache) return notificationsCache;
+  const key = getNotificationsStorageKey();
+  let loaded = null;
+  try {
+    loaded = JSON.parse(localStorage.getItem(key) || "null");
+  } catch {
+    loaded = null;
+  }
+  if (!Array.isArray(loaded) || !loaded.length) {
+    loaded = defaultNotifications.map((n) => ({ ...n }));
+    saveNotifications(loaded);
+  }
+  notificationsCache = loaded;
+  return notificationsCache;
+}
+
+function saveNotifications(items) {
+  notificationsCache = items;
+  try {
+    localStorage.setItem(getNotificationsStorageKey(), JSON.stringify(items));
+  } catch {
+    // Memory fallback
+  }
+  updateNotificationBadge();
+}
+
+function addNotification(icon, title, message) {
+  const items = getNotifications();
+  const isDuplicate = items.some(
+    (n) => n.title === title && n.message === message && Date.now() - n.timestamp < 10000,
+  );
+  if (isDuplicate) return;
+
+  const newItem = {
+    id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    icon,
+    title,
+    message,
+    time: "Just now",
+    timestamp: Date.now(),
+    read: false,
+  };
+  const updated = [newItem, ...items].slice(0, 30);
+  saveNotifications(updated);
+  if (currentPage === "notifications" || currentPage === "dashboard") {
+    render();
+  }
+}
+
+function markAllNotificationsRead() {
+  const items = getNotifications().map((n) => ({ ...n, read: true }));
+  saveNotifications(items);
+  if (currentPage === "notifications" || currentPage === "dashboard") {
+    render();
+  }
+}
+
+function getUnreadNotificationCount() {
+  return getNotifications().filter((n) => !n.read).length;
+}
+
+function updateNotificationBadge() {
+  const badge = document.querySelector("#notificationBadge");
+  if (!badge) return;
+  const count = getUnreadNotificationCount();
+  badge.textContent = String(count);
+  badge.style.display = count > 0 ? "inline-block" : "none";
+  refreshNotificationPopover();
+}
+
+function refreshNotificationPopover() {
+  const popover = document.querySelector("#notificationPopover");
+  if (!popover || popover.hidden) return;
+  const items = getNotifications().slice(0, 5);
+  popover.innerHTML = `<div class="notification-popover-head"><strong>Notifications</strong><button class="text-link" data-page="notifications">View all</button></div>${notificationList(items)}<div class="notification-popover-actions"><button class="btn btn-outline btn-small" data-action="markRead">Mark all as read</button></div>`;
+}
+
+function triggerBrowserDownload(filename, content, mimeType = "text/csv;charset=utf-8;") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+let exportNoticeTimer = null;
+function showExportNotice(message, status = "success") {
+  const notice = document.querySelector("#exportNotice");
+  if (!notice) return;
+  clearTimeout(exportNoticeTimer);
+  notice.hidden = false;
+  notice.className = `export-notice ${status}`;
+  notice.textContent = translateText(message);
+  requestAnimationFrame(() => notice.classList.add("visible"));
+  if (status !== "working") exportNoticeTimer = setTimeout(() => {
+    notice.classList.remove("visible");
+    setTimeout(() => { notice.hidden = true; }, 250);
+  }, 3600);
+}
+
+async function downloadUsageRecord(index = 0) {
+  toast("Preparing usage record download…");
+  try {
+    let bills = [];
+    try {
+      bills = await listBills();
+    } catch {
+      bills = [];
+    }
+    let period, kwh, amount, status, source;
+    if (bills && bills[index]) {
+      const b = bills[index];
+      period = `${b.periodStart} to ${b.periodEnd}`;
+      kwh = `${b.kwh} kWh`;
+      amount = `₱${(b.amountCentavos / 100).toFixed(2)}`;
+      status = "Recorded";
+      source = b.source === "ocr" ? "Official utility bill (OCR)" : "Manual entry";
+    } else {
+      const record = historyRecords[index] || historyRecords[0];
+      period = record[0];
+      kwh = record[1];
+      amount = record[2];
+      status = record[3];
+      source = "Sample household profile (no live meter connected)";
+    }
+    const csv = [
+      "SmartWatts - Recent Usage Statement",
+      `Billing Period,${period}`,
+      `Consumption,${kwh}`,
+      `Amount,${amount.replace("₱", "PHP ")}`,
+      `Status,${status}`,
+      `Data Source,${source}`,
+      `Generated At,${new Date().toISOString()}`,
+      `Note,Philippine residential electricity reference. Refer to official utility bill for final statement.`,
+    ].join("\r\n");
+
+    triggerBrowserDownload(`smartwatts-usage-record-${index + 1}.csv`, csv);
+    toast("Usage history downloaded successfully.");
+    addNotification("download", "Usage Record Downloaded", `Statement for ${period} (${kwh}) was downloaded.`);
+  } catch {
+    toast("Unable to download usage history. Please try again.");
+  }
+}
+
+async function exportUsageHistory() {
+  toast("Preparing usage history export…");
+  try {
+    let bills = [];
+    try {
+      bills = await listBills();
+    } catch {
+      bills = [];
+    }
+    const rows = [
+      ["Billing Period", "Consumption (kWh)", "Estimated Cost (PHP)", "Status", "Data Source"],
+    ];
+    if (bills && bills.length > 0) {
+      bills.forEach((b) => {
+        rows.push([
+          `"${b.periodStart} to ${b.periodEnd}"`,
+          b.kwh,
+          (b.amountCentavos / 100).toFixed(2),
+          "Recorded",
+          `"${b.source === "ocr" ? "Official utility bill (OCR)" : "Manual entry"}"`,
+        ]);
+      });
+    } else {
+      historyRecords.forEach(([period, usage, amount, status]) => {
+        rows.push([
+          `"${period}"`,
+          parseFloat(usage),
+          parseFloat(amount.replace(/[₱,]/g, "")),
+          status,
+          `"Sample household profile"`,
+        ]);
+      });
+    }
+    const csvContent = rows.map((r) => r.join(",")).join("\r\n");
+    triggerBrowserDownload(`smartwatts-usage-history-${new Date().toISOString().slice(0, 10)}.csv`, csvContent);
+    toast("Usage history downloaded successfully.");
+    addNotification("download", "Usage History Exported", "Complete usage history CSV report was downloaded.");
+  } catch {
+    toast("Unable to download usage history. Please try again.");
+  }
+}
+
+async function exportAnalyticsReport(button) {
+  const originalText = button ? button.textContent : "Export Report";
+  if (button) {
+    button.disabled = true;
+    button.textContent = translateText("Exporting…");
+  }
+  showExportNotice("Preparing your Analytics report…", "working");
+  try {
+    const bills = await listBills().catch(() => []);
+    const savedBills = [...bills].sort((a, b) => a.periodEnd.localeCompare(b.periodEnd));
+    const billTotalKwh = savedBills.reduce((sum, bill) => sum + Number(bill.kwh || 0), 0);
+    const billTotalCentavos = savedBills.reduce((sum, bill) => sum + Number(bill.amountCentavos || 0), 0);
+    const rows = [
+      ["SmartWatts - Energy Analytics Report"],
+      ["Generated Month", new Date().toLocaleDateString("en-PH", { month: "long", year: "numeric" })],
+      ["Generated At", new Date().toISOString()],
+      ["Data Basis", savedBills.length ? "Saved personal bill records; appliance split below is a sample estimate" : "Sample household consumption profile and appliance breakdown"],
+      [],
+      ["Metric", "Value", "Unit", "Note"],
+      ["Total Recorded Usage", (savedBills.length ? billTotalKwh : 342.18).toFixed(2), "kWh", savedBills.length ? `${savedBills.length} saved bills` : "Sample month"],
+      ["Recorded Bill Amount", (savedBills.length ? billTotalCentavos / 100 : 1256.34).toFixed(2), "PHP", savedBills.length ? "Sum of saved bill amounts" : "Sample estimate"],
+      ["Largest Consumer", "38%", "Air Conditioner", "129.23 kWh estimated"],
+      ["Month-over-Month Change", "+12.4%", "vs last month", "Historical comparison"],
+      [],
+      ["Device / Appliance", "Usage (kWh)", "Share of Total (%)"],
+      ...devices.map(([_, name, usage, pct]) => [`"${name}"`, usage, `"${pct}"`]),
+      [],
+      ["Saved Bill Period", "Consumption (kWh)", "Bill Amount (PHP)", "Source"],
+      ...(savedBills.length ? savedBills.map((bill) => [
+        `${bill.periodStart} to ${bill.periodEnd}`,
+        Number(bill.kwh).toFixed(2),
+        (bill.amountCentavos / 100).toFixed(2),
+        bill.source === "ocr" ? "Reviewed OCR" : "Manual entry",
+      ]) : [["No saved bill records", "", "", "Sample profile used"]]),
+      [],
+      ["Privacy & Accuracy Notice", "SmartWatts does not connect to meters or IoT hardware. All estimates are calculated from user schedules or sample profiles."],
+    ];
+    const csv = rows.map((r) => r.join(",")).join("\r\n");
+    await new Promise((r) => setTimeout(r, 400));
+    triggerBrowserDownload(`smartwatts-analytics-report-${new Date().toISOString().slice(0, 10)}.csv`, csv);
+    showExportNotice("Analytics report generated and downloaded.", "success");
+    addNotification("chart-pie", "Analytics Report Ready", "Your SmartWatts analytics CSV was generated and downloaded.");
+  } catch {
+    showExportNotice("Unable to export analytics report. Please try again.", "failure");
+  } finally {
+    if (button && button.isConnected) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
 
 // Inline SVG paths keep the icon set dependency-free.
 const iconPaths = {
@@ -495,15 +764,19 @@ function deviceTable() {
     </table>`;
 }
 
-function notificationList(items = notificationItems) {
+function notificationList(items = getNotifications()) {
+  if (!items || !items.length) {
+    return `<p class="muted-note" style="padding:15px;text-align:center">No notifications yet.</p>`;
+  }
   return items
     .map(
-      ([iconName, title, message, time]) => `
-        <div class="alert">
-          <div class="alert-icon">${icon(iconName, 18)}</div>
+      (n) => `
+        <div class="alert ${n.read ? "alert-read" : "alert-unread"}" data-notif-id="${n.id}">
+          <div class="alert-icon">${icon(n.icon, 18)}</div>
           <div style="flex:1">
-            <time>${time}</time><strong>${title}</strong><p>${message}</p>
+            <time>${n.time}</time><strong>${n.title}</strong><p>${n.message}</p>
           </div>
+          ${!n.read ? `<span class="unread-dot" title="Unread" style="width:8px;height:8px;border-radius:50%;background:var(--orange);display:inline-block;align-self:center;margin-left:8px"></span>` : ""}
         </div>`,
     )
     .join("");
@@ -516,11 +789,11 @@ function historyTable() {
       <tbody>
         ${historyRecords
           .map(
-            ([period, usage, amount, status]) => `
+            ([period, usage, amount, status], index) => `
               <tr>
                 <td>${period}</td><td>${usage}</td><td><b>${amount}</b></td>
                 <td><span class="status">${status}</span></td>
-                <td><button class="btn btn-outline" data-action="download">${icon("download", 15)} Download</button></td>
+                <td><button class="btn btn-outline" data-action="download" data-record-index="${index}">${icon("download", 15)} Download</button></td>
               </tr>`,
           )
           .join("")}
@@ -552,7 +825,7 @@ function dashboardPage() {
       </div>
       <div class="right-stack">
         ${panel("Account Overview", `<div class="detail-list">${detail("Account Name", escapeHtml(userProfile().name || "—"))}${detail("Account Number", "1234 5678 9012")}${detail("Service Address", "123 Main St., Brgy. 123, Makati City, Metro Manila")}${detail("Rate", "Residential")}</div><button class="btn btn-outline" style="width:100%;margin-top:17px" data-page="account">View Account Details</button>`)}
-        ${panel("Alerts & Notifications", notificationList(notificationItems.slice(0, 3)), `<button class="text-link" data-page="notifications">View all</button>`)}
+        ${panel("Alerts & Notifications", notificationList(getNotifications().slice(0, 3)), `<button class="text-link" data-page="notifications">View all</button>`)}
         ${panel("Bill Estimate", `<div class="stat-label">Based on your current usage</div><div class="bill-amount">₱1,256.34</div><div class="progress"><span></span></div><div class="detail-list" style="margin:13px 0">${detail("Due Date", "May 20, 2026")}${detail("Billing Period", "Apr 1 – Apr 30, 2026")}</div><button class="btn btn-primary" style="width:100%" data-page="billing">View Bill & Pay</button>`)}
       </div>
     </div>`;
@@ -631,7 +904,9 @@ function billingPage() {
       ${panel("Current Bill", `<div class="stat-label">Estimated amount due</div><div class="bill-amount">₱1,256.34</div><p class="stat-foot">Due date: May 20, 2026</p><div class="progress"><span></span></div><p class="stat-foot">Your estimated bill is based on current consumption.</p><button class="btn btn-primary" style="margin-top:15px" data-action="pay">How to pay your utility</button>`)}
       ${panel("Bill Breakdown", tableRows(breakdownRows))}
     </div>
-    <div style="margin-top:14px">${panel("Payment Methods", `<div class="detail-row"><span>Available payment channels</span><b>Online banking · E-wallet · Payment centers</b></div><p class="stat-foot">Payments are simulated in this UI demo. No real transaction will be made.</p>`)}</div>`;
+    <div class="two-panels" style="margin-top:14px">
+      ${panel("Watts Coins Discount", `<div class="coin-lock-state"><strong>🔒 Locked · Pending for Next Bill</strong><p>${formatCoins(coinBalanceCents())} Watts Coins (₱${formatCoins(coinBalanceCents())}) are saved. They can only be applied during the bill payment or subscription renewal window.</p><button class="btn btn-outline" disabled>Apply coins at payment</button></div>`)}
+      ${panel("Payment Methods", `<div class="detail-row"><span>Available payment channels</span><b>Online banking · E-wallet · Payment centers</b></div><p class="stat-foot">Payments are simulated in this UI demo. No real transaction will be made.</p>`)}</div>`;
 }
 
 function ratesPage() {
@@ -657,18 +932,13 @@ function ratesPage() {
 }
 
 function notificationsPage() {
-  const allNotifications = [...notificationItems, ...notificationItems.slice(0, 2)];
+  const allNotifications = getNotifications();
   return `
     ${pageHead("Alerts & notifications", "Recent updates about your electricity account.", `<button class="btn btn-outline" data-action="markRead">Mark all as read</button>`)}
     ${panel("Recent Activity", notificationList(allNotifications))}`;
 }
 
 function accountPage() {
-  const me = userProfile();
-  const value = (text) => `value="${escapeHtml(text)}"`;
-  const photo = me.photo
-    ? `<img src="${escapeHtml(me.photo)}" alt="" referrerpolicy="no-referrer" style="width:64px;height:64px;border-radius:50%;object-fit:cover">`
-    : `<span class="avatar" style="width:64px;height:64px;font-size:22px;pointer-events:none">${escapeHtml((me.firstName[0] ?? "") + (me.lastName[0] ?? "") || "ME")}</span>`;
   return `
     ${pageHead("Account settings", "Manage your account details and preferences.")}
     <div style="margin-bottom:14px">${panel("Sign-in & security", `<div data-slot="account-security"><p class="muted-note">Loading…</p></div>`)}</div>
@@ -681,11 +951,10 @@ function accountPage() {
       </div>
       ${panel("Personal Information", `
         <form class="form-grid" id="accountForm">
-          <div class="field full" style="display:flex;align-items:center;gap:14px">${photo}<div><b>${escapeHtml(me.name || "Your profile")}</b><p class="muted-note" style="margin:2px 0 0">${me.signedIn ? `Signed in with ${me.provider}` : "Guest session"}</p></div></div>
-          <div class="field"><label>First Name</label><input ${value(me.firstName)}></div>
-          <div class="field"><label>Last Name</label><input ${value(me.lastName)}></div>
-          <div class="field"><label>Email Address</label><input type="email" ${value(me.email)} disabled></div>
-          <div class="field"><label>Mobile Number</label><input ${value(me.phone)} placeholder="+63 9XX XXX XXXX"></div>
+          <div class="field"><label>First Name</label><input value="Rean Justine"></div>
+          <div class="field"><label>Last Name</label><input value="Baulite"></div>
+          <div class="field"><label>Email Address</label><input type="email" value="rean.justine@example.com"></div>
+          <div class="field"><label>Mobile Number</label><input value="+63 9XX XXX XXXX"></div>
           <div class="field full"><label>Service Address</label><input value="123 Main St., Brgy. 123, Makati City, Metro Manila"></div>
           <div class="field"><label>Account Number</label><input value="1234 5678 9012" disabled></div>
           <div class="field"><label>Rate Category</label><input value="Residential" disabled></div>
@@ -739,7 +1008,7 @@ function aboutPage() {
     <div class="grid card-grid about-cards">
       ${panel("Our purpose", `<div class="about-card-icon">${icon("chart-pie", 22)}</div><h3>Make usage easier to understand</h3><p>Bring consumption, device breakdowns, and billing estimates together in one approachable place.</p>`)}
       ${panel("Our approach", `<div class="about-card-icon">${icon("activity", 22)}</div><h3>Turn data into useful insights</h3><p>Present sample energy information in clear charts and summaries that help people make informed decisions.</p>`)}
-      ${panel("Our team", `<div class="about-card-icon">${icon("users-round", 22)}</div><h3>Project team</h3><p>Team member names and roles are omitted until verified details are available.</p>`)}
+      ${panel("Our team", `<div class="about-card-icon">${icon("users-round", 22)}</div><h3>Project team</h3><div class="team-member-item"><strong>Rolex Esto</strong><span class="muted-note">Lead Developer / Engineering</span></div><p class="stat-foot" style="margin-top:8px">Additional team member names and designated responsibilities are omitted pending official confirmation (status: NEEDS USER DATA).</p>`)}
     </div>
     <p class="about-note">This demo uses sample account and usage data. It is not affiliated with or an official service of MERALCO.</p>`;
 }
@@ -837,8 +1106,9 @@ async function refreshWorkspaces({ force = true } = {}) {
   const key = JSON.stringify([account.permanent, account.email, account.emailVerified, memberships]);
   const changed = key !== lastAccountKey;
   lastAccountKey = key;
-  // A background anonymous sign-in changes nothing visible; re-rendering would wipe half-filled forms.
-  if (!force && !changed && currentPage !== "account") return;
+  // A background anonymous sign-in changes nothing visible (the Account page included);
+  // re-rendering would wipe a half-typed email and password or any other form.
+  if (!force && !changed) return;
   const allowed = new Set([...pageIdsOf(currentNavigation()), ...alwaysAvailable]);
   if (!allowed.has(currentPage)) currentPage = workspaceHome[getWorkspace().type];
   render();
@@ -857,6 +1127,7 @@ function render() {
   document.body.classList.toggle("workspace-rental", getWorkspace().type !== "personal");
   renderCharts();
   renderGameChrome(currentPage);
+  updateNotificationBadge();
   animateNumbers();
   const language = getLanguage();
   document.documentElement.lang = language;
@@ -898,9 +1169,18 @@ function navigate(page) {
   }
 
   currentPage = page;
+  navigationEpoch += 1;
   render();
   closeSidebar();
   window.scrollTo(0, 0);
+}
+
+// Saves finish asynchronously. If the person has moved to another page by then, a late
+// "redraw" from the finished action must not rebuild that page and wipe what they typed.
+let navigationEpoch = 0;
+function actionContext() {
+  const startedAt = navigationEpoch;
+  return { ...pageContext, render: () => { if (startedAt === navigationEpoch) render(); } };
 }
 
 // Global interactions
@@ -913,19 +1193,13 @@ const actionMessages = {
 };
 
 document.addEventListener("click", (event) => {
-  const questButton = event.target.closest("[data-quest]");
-  if (questButton) {
-    claimQuest(questButton.dataset.quest, questButton);
-    return;
-  }
-
   const actButton = event.target.closest("[data-act]");
   if (actButton) {
     const handler = personalActions[actButton.dataset.act] ?? rentalActions[actButton.dataset.act] ?? locatorActions[actButton.dataset.act] ?? calendarActions[actButton.dataset.act];
     if (handler) {
       event.preventDefault();
       actButton.disabled = true;
-      Promise.resolve(handler(actButton, pageContext))
+      Promise.resolve(handler(actButton, actionContext()))
         .catch((error) => toast(error instanceof Error ? error.message : "Something went wrong."))
         .finally(() => {
           if (actButton.isConnected) actButton.disabled = false;
@@ -936,13 +1210,58 @@ document.addEventListener("click", (event) => {
 
   const pageButton = event.target.closest("[data-page]");
   if (pageButton) {
+    if (pageButton.closest("#notificationPopover")) {
+      $("#notificationPopover").hidden = true;
+      $("#notificationsBtn").setAttribute("aria-expanded", "false");
+    }
     navigate(pageButton.dataset.page);
     return;
   }
 
   const actionButton = event.target.closest("[data-action]");
   if (actionButton) {
-    toast(actionMessages[actionButton.dataset.action] || "Action selected.");
+    const action = actionButton.dataset.action;
+    if (action === "checkin") {
+      checkIn(actionButton);
+      return;
+    }
+    if (action === "coin-history") {
+      event.preventDefault();
+      document.querySelector("#coin-ledger")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    if (action === "download") {
+      downloadUsageRecord(Number(actionButton.dataset.recordIndex || 0));
+      return;
+    }
+    if (action === "export") {
+      if (currentPage === "breakdown") {
+        exportAnalyticsReport(actionButton);
+      } else {
+        exportUsageHistory();
+      }
+      return;
+    }
+    if (action === "markRead") {
+      markAllNotificationsRead();
+      toast(actionMessages.markRead);
+      return;
+    }
+    toast(actionMessages[action] || "Action selected.");
+  }
+
+  const coinTab = event.target.closest("[data-coin-tab]");
+  if (coinTab) {
+    window.__smartWattsCoinTab = coinTab.dataset.coinTab;
+    render();
+    return;
+  }
+});
+
+document.addEventListener("change", (event) => {
+  if (event.target.id === "dailyHabitCheck") {
+    const button = document.querySelector('[data-action="checkin"]');
+    if (button) button.disabled = !event.target.checked;
   }
 });
 
@@ -984,7 +1303,26 @@ window.addEventListener("smartwatts-language-change", (event) => {
   const unsaved = captureFormValues();
   render();
   restoreFormValues(unsaved);
+  // Keep the preference with the account (users/{uid}) so it follows the person across devices.
+  savePreferredLanguage(language).catch(() => toast("Your language changed for this session, but SmartWatts could not save the preference."));
 });
+
+// On sign-in, adopt the account's saved language only if this browser has no choice of its own.
+let languageRestoredFor = null;
+async function restoreAccountLanguage() {
+  const { uid, permanent } = currentAccount();
+  if (!permanent || !uid || languageRestoredFor === uid) return;
+  languageRestoredFor = uid;
+  let hasLocalChoice = true;
+  try {
+    hasLocalChoice = localStorage.getItem("smartwatts-language") !== null;
+  } catch {
+    hasLocalChoice = true;
+  }
+  if (hasLocalChoice) return;
+  const saved = await loadPreferredLanguage();
+  if (saved && saved !== getLanguage()) setLanguage(saved);
+}
 
 // Changing the interface language re-renders the page; carry unsaved form input across it.
 function captureFormValues() {
@@ -1051,7 +1389,7 @@ document.addEventListener("submit", (event) => {
     const form = event.target;
     const submit = form.querySelector('[type="submit"], button:not([type])');
     if (submit) submit.disabled = true;
-    Promise.resolve(formHandler(form, pageContext))
+    Promise.resolve(formHandler(form, actionContext()))
       .catch((error) => toast(error instanceof Error ? error.message : "Something went wrong."))
       .finally(() => {
         if (submit?.isConnected) submit.disabled = false;
@@ -1067,6 +1405,7 @@ document.addEventListener("submit", (event) => {
       return;
     }
     const persisted = saveMonthlyEnergyTarget(target);
+    addNotification("target", "Energy Goal Updated", `Monthly energy target set to ${target} kWh.`);
     render();
     toast(persisted ? "Monthly energy target updated." : "Target updated for this session; browser storage is unavailable.");
     return;
@@ -1074,23 +1413,34 @@ document.addEventListener("submit", (event) => {
 
   if (event.target.id === "accountForm") {
     event.preventDefault();
-    const user = auth?.currentUser;
-    const [first, last] = [...event.target.querySelectorAll("input")].slice(0, 2).map((input) => input.value.trim());
-    const displayName = [first, last].filter(Boolean).join(" ");
-    if (!user || user.isAnonymous || !displayName) {
-      toast("Account changes saved in this demo.");
-      return;
-    }
-    import("firebase/auth")
-      .then(({ updateProfile }) => updateProfile(user, { displayName }))
-      .then(() => { render(); toast("Your name was updated."); })
-      .catch(() => toast("Could not update your name. Please try again."));
+    toast("Account changes saved in this demo.");
   }
 });
 
 $("#menuToggle").addEventListener("click", () => {
   const isOpen = $("#sidebar").classList.toggle("open");
   $("#menuToggle").setAttribute("aria-expanded", String(isOpen));
+});
+
+$("#notificationsBtn").addEventListener("click", (event) => {
+  event.stopPropagation();
+  const button = event.currentTarget;
+  const popover = $("#notificationPopover");
+  const open = popover.hidden;
+  popover.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  if (open) refreshNotificationPopover();
+});
+
+document.addEventListener("click", (event) => {
+  const wrap = $("#notificationWrap");
+  if (!wrap?.contains(event.target)) {
+    const popover = $("#notificationPopover");
+    if (popover && !popover.hidden) {
+      popover.hidden = true;
+      $("#notificationsBtn")?.setAttribute("aria-expanded", "false");
+    }
+  }
 });
 
 // The mobile tab bar's "More" button opens the same navigation drawer as the top menu button.
@@ -1112,16 +1462,68 @@ applyTheme(savedTheme);
 $("#ui-language").value = getLanguage();
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeSidebar();
+  if (event.key === "Escape") {
+    closeSidebar();
+    $("#notificationPopover").hidden = true;
+    $("#notificationsBtn").setAttribute("aria-expanded", "false");
+  }
 });
 
 setGameCallbacks({ render, toast, pageHead, stat, panel, language: getLanguage });
 if (readInviteFromHash()) currentPage = "join";
-render();
 lastAccountKey = JSON.stringify([false, null, false, []]);
-onAccountChange(() => {
-  refreshWorkspaces({ force: false }).catch(() => undefined);
+onAccountChange((state) => {
+  setGameUser(state.uid);
+  setNotificationUser(state.uid);
+  renderPageHeading();
+  updateNotificationBadge();
+  refreshWorkspaces({ force: false }).catch(() => toast("SmartWatts could not refresh your account workspace. Try again shortly."));
+  restoreAccountLanguage().catch(() => toast("SmartWatts could not load your saved language preference."));
 });
+
+window.addEventListener("smartwatts-appliance-saved", (event) => {
+  addNotification("plug-zap", "Appliance Saved", `${event.detail || "Appliance"} was registered to your household.`);
+});
+
+window.addEventListener("smartwatts-bill-saved", async (event) => {
+  const detail = event.detail;
+  const period = detail ? `${detail.periodStart} – ${detail.periodEnd}` : "";
+  addNotification("receipt-text", "Electricity Bill Saved", `Bill for ${period} was recorded.`);
+  if (detail?.verified === true && detail?.kwh != null && detail?.periodStart && detail?.periodEnd) {
+    try {
+      const bills = (await listBills()).sort((a, b) => a.periodEnd.localeCompare(b.periodEnd));
+      const previous = bills.filter((bill) => bill.periodEnd < detail.periodStart).at(-1);
+      if (previous) {
+        const awarded = awardMonthlyReduction(Number(detail.kwh), previous.kwh, detail.periodEnd.slice(0, 7));
+        if (awarded > 0) addNotification("circle-check", "Monthly kWh Bonus Earned", `You earned ${formatCoins(awarded)} Watts Coins for reducing usage by ${(previous.kwh - Number(detail.kwh)).toFixed(2)} kWh.`);
+      }
+    } catch {
+      // A saved bill remains recorded even when a local bonus comparison cannot run.
+    }
+  }
+});
+
+window.addEventListener("smartwatts-coins-expiring", (event) => {
+  const amount = formatCoins(event.detail.amountCents);
+  const date = new Date(event.detail.expiresAt).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" });
+  addNotification("clock", "Watts Coins Expiring Soon", `${amount} coin(s) expire on ${date}. Use them during your next eligible bill payment or renewal window.`);
+});
+
+window.addEventListener("smartwatts-coins-expired", (event) => {
+  addNotification("circle-minus", "Watts Coins Expired", `${formatCoins(event.detail.amountCents)} Watts Coins expired after the three-month validity period.`);
+});
+
+window.addEventListener("smartwatts-plan-saved", (event) => {
+  addNotification("trending-down", "Savings Plan Saved", `Savings plan "${event.detail}" was created.`);
+});
+
+// Reconcile expiry while the app is open and whenever the user returns to the tab.
+window.addEventListener("focus", () => getCoinState());
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") getCoinState();
+});
+window.setInterval(() => getCoinState(), 60_000);
+render();
 
 loadSupportedLanguages()
   .then((languages) => {

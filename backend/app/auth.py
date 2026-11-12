@@ -11,12 +11,13 @@ from dataclasses import dataclass
 from typing import Annotated
 
 import firebase_admin
+import google.auth
 from fastapi import Depends, Header, HTTPException
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials
 from firebase_admin.exceptions import FirebaseError
 from google.auth.credentials import AnonymousCredentials
-from google.auth.exceptions import DefaultCredentialsError
+from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
 
 
 @dataclass(frozen=True)
@@ -39,9 +40,14 @@ def get_firebase_app():
     try:
         return firebase_admin.get_app()
     except ValueError:
-        # Without a service account, ID-token verification still works (it only needs
-        # Google's public keys), so fall back to anonymous credentials instead of failing.
-        credential = None if os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip() else _PublicKeysOnly()
+        # ID-token verification uses Google's public keys; without configured
+        # service credentials, use anonymous credentials rather than requiring
+        # write-capable Admin SDK credentials for this API's auth dependency.
+        try:
+            google.auth.default()
+            credential = None
+        except DefaultCredentialsError:
+            credential = _PublicKeysOnly()
         return firebase_admin.initialize_app(credential, options={"projectId": project_id})
 
 
@@ -61,7 +67,7 @@ def require_user(authorization: Annotated[str | None, Header()] = None) -> AuthU
         raise HTTPException(status_code=401, detail="The Firebase sign-in token is invalid or expired.")
     except ValueError:
         raise HTTPException(status_code=401, detail="The Firebase sign-in token is invalid or expired.")
-    except (DefaultCredentialsError, FirebaseError) as error:
+    except (DefaultCredentialsError, GoogleAuthError, FirebaseError) as error:
         raise HTTPException(status_code=503, detail="Firebase token verification is unavailable.") from error
 
     provider = claims.get("firebase", {}).get("sign_in_provider", "")

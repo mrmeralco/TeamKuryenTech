@@ -217,7 +217,7 @@ async def chat(request: ChatRequest, _user: AuthUser = Depends(require_user)):
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 700},
     }
 
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
             response = await client.post(
@@ -320,7 +320,7 @@ async def analyze_appliance_label(request: ApplianceVisionRequest, _user: AuthUs
         },
     }
 
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
             response = await client.post(
