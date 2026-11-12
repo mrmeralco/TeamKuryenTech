@@ -42,20 +42,25 @@ export async function logout(): Promise<void> {
 
 function showUser(user: User): void {
   const avatar = document.querySelector<HTMLElement>(".topbar .avatar");
-  if (avatar) {
-    avatar.title = user.displayName || user.email || "";
-    if (user.photoURL) {
-      const img = document.createElement("img");
-      img.src = user.photoURL;
-      img.alt = "";
-      img.referrerPolicy = "no-referrer";
-      img.style.cssText = "width:100%;height:100%;border-radius:50%;object-fit:cover";
-      img.onerror = () => { avatar.textContent = initials(user); };
-      avatar.replaceChildren(img);
-    } else {
-      avatar.textContent = initials(user);
-    }
-  }
+  if (!avatar) return;
+  avatar.title = user.email ? `${user.displayName ?? ""} (${user.email})`.trim() : user.displayName ?? "";
+  avatar.setAttribute("aria-label", `Account: ${user.email ?? user.displayName ?? ""}`);
+  const showInitials = () => {
+    avatar.removeAttribute("style");
+    avatar.textContent = initials(user);
+  };
+  if (!user.photoURL) return showInitials();
+
+  // Profile photo of the signed-in account (e.g. the Google account picture), filling the whole circle.
+  const img = document.createElement("img");
+  img.src = user.photoURL;
+  img.alt = "";
+  img.referrerPolicy = "no-referrer";
+  img.style.cssText = "display:block;width:100%;height:100%;border-radius:50%;object-fit:cover";
+  img.onerror = showInitials;
+  avatar.style.cssText =
+    "width:40px;height:40px;padding:0;overflow:hidden;border-radius:50%;background:#fff;border:2px solid #ff7a00;flex:none";
+  avatar.replaceChildren(img);
 }
 
 async function start(): Promise<void> {

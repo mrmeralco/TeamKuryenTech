@@ -314,3 +314,47 @@ def test_ai_appliance_energy_efficiency_label_success(monkeypatch):
     assert data["label_type"] == "ENERGY_EFFICIENCY"
 
 
+
+
+def test_ai_appliance_identified_from_photo_without_label(monkeypatch):
+    """A plain photo of an electric fan: the type is recognized, no specs are invented."""
+    import json
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    mock_json = json.dumps({
+        "brand": None, "model": None, "appliance_type": "Electric fan",
+        "identified_from": "object", "size_hint": "16-inch stand fan",
+        "watts": None, "label_type": "UNKNOWN", "evidence": "No rating label visible", "confidence": "medium",
+    })
+
+    class MockAsyncClient:
+        def __init__(self, *, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, *, headers, json):
+            assert "even when nothing is printed" in json["contents"][0]["parts"][1]["text"]
+
+            class MockResponse:
+                status_code = 200
+                is_error = False
+
+                def json(self):
+                    return {"candidates": [{"content": {"parts": [{"text": mock_json}]}}]}
+            return MockResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", MockAsyncClient)
+    response = client.post("/api/ai/appliance-label", json={
+        "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "mime_type": "image/png",
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["appliance_type"] == "Electric fan"
+    assert data["identified_from"] == "object"
+    assert data["size_hint"] == "16-inch stand fan"
+    assert data["watts"] is None
