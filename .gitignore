@@ -13,3 +13,4 @@ backend/.pytest_cache/
 firebase-adminsdk-*.json
 *-debug.log
 .firebase/
+backend/data/

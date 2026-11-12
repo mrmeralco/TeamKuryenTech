@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("notification bell opens, toggles closed, and closes on outside click", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/dashboard");
   const bell = page.locator("#notificationsBtn");
   const popover = page.locator("#notificationPopover");
   await bell.click();
@@ -17,7 +17,7 @@ test("notification bell opens, toggles closed, and closes on outside click", asy
 });
 
 test("usage and analytics exports download CSV files and report a clear result", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.locator('#navigation [data-page="history"]').click();
   const [usageDownload] = await Promise.all([
     page.waitForEvent("download"),
@@ -38,7 +38,7 @@ test("usage and analytics exports download CSV files and report a clear result",
 test("dashboard loads and chat supports Tagalog selection", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.evaluate(() => {
     localStorage.removeItem("smartwatts-game");
     localStorage.removeItem("smartwatts-coins-guest");
@@ -47,7 +47,7 @@ test("dashboard loads and chat supports Tagalog selection", async ({ page }) => 
     localStorage.removeItem("smartwatts-theme");
   });
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Good morning, Rean Justine!" })).toBeVisible();
+  await expect(page.locator("#pageTitle")).toContainText(/^Good (morning|noon|afternoon|evening)(, .+)?!$/);
   await expect(page.getByRole("button", { name: "Check in to get coins" })).toBeDisabled();
   await page.getByLabel("I completed one energy-saving habit today.").check();
   await page.getByRole("button", { name: "Check in to get coins" }).click();
@@ -77,9 +77,9 @@ test("dashboard loads and chat supports Tagalog selection", async ({ page }) => 
 });
 
 test("system language, usage ranges, and theme preferences work across pages", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.locator("#ui-language").selectOption("tl");
-  await expect(page.getByRole("heading", { name: "Magandang umaga, Rean Justine!" })).toBeVisible();
+  await expect(page.locator("#pageTitle")).toContainText(/^Magandang (umaga|tanghali|hapon|gabi)(, .+)?!$/);
   await expect(page.getByRole("button", { name: "Mga Layunin sa Enerhiya" })).toBeVisible();
   await expect(page.locator(".game-card")).toHaveAttribute("aria-label", "Daily Watts Coins check-in");
   await expect(page.locator(".coin-day small").first()).toHaveText("Ngayong Araw");
@@ -120,7 +120,7 @@ test("system language, usage ranges, and theme preferences work across pages", a
 
 test("mobile top bar stays compact and dark surfaces remain dark", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
+  await page.goto("/dashboard");
 
   await expect(page.locator(".topbar")).toBeVisible();
   await expect.poll(() => page.locator(".topbar").evaluate((element) => element.getBoundingClientRect().height))
@@ -137,7 +137,7 @@ test("mobile top bar stays compact and dark surfaces remain dark", async ({ page
 });
 
 test("support page provides MERALCO contact links", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.locator('[data-page="support"]').first().click();
 
   await expect(page.getByText("General Contact Information")).toBeVisible();

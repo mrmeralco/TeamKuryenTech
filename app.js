@@ -25,6 +25,38 @@ import { getWorkspace, loadWorkspaces, setWorkspace, workspaceOptions } from "./
 import { currentAccount, onAccountChange } from "./src/lib/account.ts";
 import { escapeHtml } from "./src/lib/format.ts";
 import { listBills, loadPreferredLanguage, savePreferredLanguage } from "./src/lib/personal/store.ts";
+import { auth } from "./src/lib/firebase.ts";
+
+// Signed-in user's profile (Google name/photo or the name entered at registration).
+function userProfile() {
+  const user = auth?.currentUser;
+  const signedIn = Boolean(user && !user.isAnonymous);
+  const email = signedIn ? user.email ?? "" : "";
+  const name = (signedIn && user.displayName?.trim()) || (email ? email.split("@")[0] : "");
+  const parts = name.split(/\s+/).filter(Boolean);
+  return {
+    signedIn,
+    name,
+    firstName: parts.length > 1 ? parts.slice(0, -1).join(" ") : parts[0] ?? "",
+    lastName: parts.length > 1 ? parts[parts.length - 1] : "",
+    email,
+    phone: (signedIn && user.phoneNumber) || "",
+    photo: (signedIn && user.photoURL) || "",
+    provider: signedIn && user.providerData.some((p) => p.providerId === "google.com") ? "Google" : "Email",
+  };
+}
+
+// Good morning (5–11), noon (12), afternoon (13–17), evening (18–4).
+function greeting(date = new Date()) {
+  const hour = date.getHours();
+  const period = hour >= 5 && hour < 12 ? "morning" : hour === 12 ? "noon" : hour >= 13 && hour < 18 ? "afternoon" : "evening";
+  const firstName = userProfile().firstName;
+  if (getLanguage() === "tl") {
+    const tl = { morning: "Magandang umaga", noon: "Magandang tanghali", afternoon: "Magandang hapon", evening: "Magandang gabi" }[period];
+    return firstName ? `${tl}, ${firstName}!` : `${tl}!`;
+  }
+  return firstName ? `Good ${period}, ${firstName}!` : `Good ${period}!`;
+}
 
 // Navigation and screen copy
 // Tier 1 — SmartWatts Personal (free forever)
@@ -509,13 +541,7 @@ function renderNavigation() {
 
 function renderPageHeading() {
   const [title, subtitle] = pageTitles[currentPage];
-  const account = currentAccount();
-  if (currentPage === "dashboard" && account.signedIn && account.permanent) {
-    const name = account.displayName || (account.email ? account.email.split("@")[0] : "User");
-    $("#pageTitle").textContent = `Good morning, ${name}!`;
-  } else {
-    $("#pageTitle").textContent = title;
-  }
+  $("#pageTitle").textContent = currentPage === "dashboard" ? greeting() : title;
   $("#pageSubtitle").textContent = subtitle;
 }
 
@@ -798,7 +824,7 @@ function dashboardPage() {
         </div>
       </div>
       <div class="right-stack">
-        ${panel("Account Overview", `<div class="detail-list">${detail("Account Name", "Rean Justine O. Baulite")}${detail("Account Number", "1234 5678 9012")}${detail("Service Address", "123 Main St., Brgy. 123, Makati City, Metro Manila")}${detail("Rate", "Residential")}</div><button class="btn btn-outline" style="width:100%;margin-top:17px" data-page="account">View Account Details</button>`)}
+        ${panel("Account Overview", `<div class="detail-list">${detail("Account Name", escapeHtml(userProfile().name || "—"))}${detail("Account Number", "1234 5678 9012")}${detail("Service Address", "123 Main St., Brgy. 123, Makati City, Metro Manila")}${detail("Rate", "Residential")}</div><button class="btn btn-outline" style="width:100%;margin-top:17px" data-page="account">View Account Details</button>`)}
         ${panel("Alerts & Notifications", notificationList(getNotifications().slice(0, 3)), `<button class="text-link" data-page="notifications">View all</button>`)}
         ${panel("Bill Estimate", `<div class="stat-label">Based on your current usage</div><div class="bill-amount">₱1,256.34</div><div class="progress"><span></span></div><div class="detail-list" style="margin:13px 0">${detail("Due Date", "May 20, 2026")}${detail("Billing Period", "Apr 1 – Apr 30, 2026")}</div><button class="btn btn-primary" style="width:100%" data-page="billing">View Bill & Pay</button>`)}
       </div>

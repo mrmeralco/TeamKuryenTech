@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Log in — SmartWatts</title>
+<script src="/landing/vendor/react.js"></script>
+<script src="/landing/vendor/react-dom.js"></script>
+<script src="/landing/support.js"></script>
+<script>window.SWAuthReady = import("/landing/auth.js");</script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@600;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#F4F2ED}
+body:has(.sw.dark){background:#0B0B0A}
+.sw{--bg:#F4F2ED;--surface:#FFFFFF;--surface-2:#F7F6F2;--ink:#0E0E0E;--ink-2:#3D3D3A;--muted:#5B5B57;--line:#E6E3DD;--line-3:#D9D5CD;--accent-text:#B85400;--accent-soft:#FFF4E8;--err:#B42318;--card-shadow:0 1px 2px rgba(14,14,14,.04),0 24px 60px -28px rgba(80,40,0,.22);color-scheme:light}
+.sw.dark{--bg:#0B0B0A;--surface:#161614;--surface-2:#1D1C1A;--ink:#F3F1EC;--ink-2:#D2CFC8;--muted:#A6A39C;--line:#2A2926;--line-3:#3A3935;--accent-text:#FF9A3D;--accent-soft:#2A1A0C;--err:#FF8A7A;--card-shadow:0 1px 2px rgba(0,0,0,.4),0 24px 60px -28px rgba(0,0,0,.8);color-scheme:dark}
+.sw,.sw .card,.sw .inp{transition:background-color .45s ease,color .45s ease,border-color .3s ease,box-shadow .3s ease}
+a{color:var(--ink)}a:hover{color:var(--accent-text)}
+.inp{font-family:inherit;outline:none}
+.inp:focus{border-color:#FF7B00!important;box-shadow:0 0 0 4px rgba(255,123,0,.18)}
+.inp::placeholder{color:var(--muted);opacity:.75}
+.btn-primary{transition:background .25s ease,transform .35s cubic-bezier(.22,1,.36,1),box-shadow .35s ease;position:relative;overflow:hidden}
+.btn-primary:hover{background:#E86F00!important;transform:translateY(-1px);box-shadow:0 12px 28px -12px rgba(232,111,0,.65)}
+.btn-primary::after{content:"";position:absolute;top:0;bottom:0;left:-60%;width:40%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent);transform:skewX(-20deg);transition:left .7s cubic-bezier(.22,1,.36,1)}
+.btn-primary:hover::after{left:130%}
+.btn-google{transition:border-color .25s ease,background .25s ease,transform .3s cubic-bezier(.22,1,.36,1)}
+.btn-google:hover{border-color:var(--ink-2)!important;background:var(--surface-2)!important}
+.seg a{transition:color .25s ease}
+.theme-toggle{transition:transform .5s cubic-bezier(.34,1.56,.64,1),border-color .3s ease}
+.theme-toggle:hover{transform:rotate(18deg) scale(1.06);border-color:#FF7B00!important}
+.blob{position:absolute;pointer-events:none;filter:blur(70px);animation:morph 18s ease-in-out infinite alternate}
+@keyframes morph{0%{border-radius:42% 58% 63% 37%/45% 41% 59% 55%;transform:translate(0,0) rotate(0)}50%{border-radius:61% 39% 44% 56%/58% 62% 38% 42%;transform:translate(30px,-24px) rotate(60deg) scale(1.06)}100%{border-radius:38% 62% 52% 48%/36% 54% 46% 64%;transform:translate(-20px,22px) rotate(120deg)}}
+.rise{opacity:0;animation:rise .7s cubic-bezier(.22,1,.36,1) forwards}
+.d1{animation-delay:.05s}.d2{animation-delay:.1s}.d3{animation-delay:.15s}.d4{animation-delay:.2s}.d5{animation-delay:.25s}.d6{animation-delay:.3s}.d7{animation-delay:.35s}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.shake{animation:shake .4s ease}
+@keyframes shake{0%,100%{transform:none}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
+.tapcard{animation:tapcard 3.4s cubic-bezier(.22,1,.36,1) infinite}
+@keyframes tapcard{0%,100%{transform:translate(96px,-30px) rotate(-16deg)}40%,70%{transform:translate(40px,30px) rotate(-8deg)}}
+.urlbar{animation:urlbar 3.4s ease infinite}
+@keyframes urlbar{0%,42%{opacity:0;transform:translateY(8px)}50%,88%{opacity:1;transform:none}100%{opacity:0}}
+.loadbar{transform-origin:left;animation:loadbar 3.4s ease infinite}
+@keyframes loadbar{0%,48%{transform:scaleX(0)}75%,100%{transform:scaleX(1)}}
+.ring{position:absolute;inset:0;border:2px solid #FF7B00;border-radius:50%;animation:ring 3.4s ease-out infinite}
+@keyframes ring{0%,38%{transform:scale(.7);opacity:0}45%{opacity:.9}80%,100%{transform:scale(1.5);opacity:0}}
+.spinner{width:18px;height:18px;border-radius:50%;border:2px solid rgba(14,14,14,.2);border-top-color:#0E0E0E;animation:spin .8s linear infinite}
+.spinner-ink{border-color:var(--line-3);border-top-color:var(--ink)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.iconswap{animation:iconswap .55s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes iconswap{from{opacity:0;transform:rotate(-120deg) scale(.4)}to{opacity:1;transform:none}}
+.lg-night{display:none}.sw.dark .lg-day{display:none}.sw.dark .lg-night{display:block}
+::view-transition-old(root),::view-transition-new(root){animation:none;mix-blend-mode:normal}
+.card-logo{display:none}
+@media (max-width: 980px){.brand-panel{display:none!important}.card-logo{display:flex}}
+@media (max-width: 520px){.card{padding:28px 20px!important;border-radius:18px!important}}
+.flow,.tw{}
+.flow{stroke-dasharray:46 1100;stroke-dashoffset:1146;animation:flow 5.5s linear infinite;filter:drop-shadow(0 0 4px #FF7B00)}
+@keyframes flow{to{stroke-dashoffset:0}}
+.tw{animation:tw 4s ease-in-out infinite}
+@keyframes tw{0%,100%{opacity:.9}50%{opacity:.15}}
+.otp-input{caret-color:transparent;color:transparent;background:transparent;border:0;outline:none}
+.caret{display:inline-block;width:2px;height:26px;background:#FF7B00;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.link-btn{background:none;border:0;padding:0;font-family:inherit;cursor:pointer;color:var(--accent-text);font-weight:600;font-size:14px}
+.link-btn:hover{text-decoration:underline}
+.bar{transition:width .5s cubic-bezier(.22,1,.36,1),background .3s ease}
+.pop{animation:pop .6s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes pop{from{transform:scale(.3);opacity:0}to{transform:none;opacity:1}}
+.draw{stroke-dasharray:30;stroke-dashoffset:30;animation:draw .5s ease .35s forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+@media (prefers-reduced-motion: reduce){.flow{animation:none!important;stroke-dasharray:none;opacity:.5}.tw{animation:none!important}.blob,.rise,.tapcard,.ring,.shake,.urlbar,.loadbar{animation:none!important;opacity:1}}
+
+
+/* Brand panel follows day/night theme. */
+.sw{--bp-bg:#FFF6EC;--bp-ink:#0E0E0E;--bp-ink-2:#3D3D3A;--bp-dot:#E6DBCB;--bp-line:#E6E3DD;--bp-chip:rgba(255,255,255,.8);--bp-muted:#5B5B57;--bp-accent:#B85400;--bp-card:rgba(255,255,255,.85)}
+.sw.dark{--bp-bg:#0E0E0E;--bp-ink:#FAFAF7;--bp-ink-2:#CFCCC5;--bp-dot:#1F1E1B;--bp-line:#2A2926;--bp-chip:rgba(20,20,18,.7);--bp-muted:#A9A6A0;--bp-accent:#FF9A3D;--bp-card:rgba(22,22,20,.72)}
+.brand-panel,.brand-panel *{transition:background-color .45s ease,color .45s ease,border-color .45s ease,fill .45s ease,stroke .45s ease}
+.sw:not(.dark) .brand-panel{border-right:1px solid var(--line)}
+.sw:not(.dark) .brand-panel svg[stroke="#FF9A3D"]{stroke:#E06A00}
+.sw:not(.dark) .brand-panel .grid-scene rect[fill="#191816"]{fill:#EFE4D5}
+.sw:not(.dark) .brand-panel .grid-scene rect[fill="#111110"]{fill:#E3D5C2}
+.sw:not(.dark) .brand-panel .grid-scene rect[fill="#0B0B0A"]{fill:#F4F2ED}
+.sw:not(.dark) .brand-panel .grid-scene rect[fill="#FFB36B"]{fill:#FF9A3D}
+.sw:not(.dark) .brand-panel .grid-scene path[stroke="#3A3935"]{stroke:#C8BCAA}
+.sw:not(.dark) .brand-panel .grid-scene path[stroke="#4A4844"]{stroke:#BFB2A0}
+.sw:not(.dark) .brand-panel .grid-scene path.flow{stroke:#FF7B00}
+.sw:not(.dark) .brand-panel #fade stop{stop-color:#FFF6EC}
+.sw:not(.dark) .brand-panel .blob{opacity:.28!important}
+</style>
+</helmet>
+<div class="sw {{themeClass}}" style="font-family: Inter, system-ui, sans-serif; color: var(--ink); background: var(--bg); min-height: 100vh; display: flex; -webkit-font-smoothing: antialiased">
+
+<aside class="brand-panel" aria-hidden="true" style="flex: 0 0 44%; position: relative; overflow: hidden; background: var(--bp-bg); color: var(--bp-ink); padding: 40px 52px; box-sizing: border-box; display: flex; flex-direction: column; gap: 28px">
+<div class="blob" style="width: 460px; height: 460px; right: -200px; top: -200px; background: #FF7B00; opacity: 0.22"></div>
+<div style="position: absolute; inset: 0; background-image: radial-gradient(var(--bp-dot) 1px, transparent 1px); background-size: 24px 24px; -webkit-mask-image: linear-gradient(#000 0%, transparent 60%); mask-image: linear-gradient(#000 0%, transparent 60%)"></div>
+<svg class="grid-scene" aria-hidden="true" viewBox="0 0 800 380" preserveAspectRatio="xMidYMax slice" style="position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 52%"><defs><radialGradient id="glow" cx="50%" cy="100%" r="70%"><stop offset="0" stop-color="#FF7B00" stop-opacity=".45"></stop><stop offset=".6" stop-color="#FF7B00" stop-opacity=".08"></stop><stop offset="1" stop-color="#FF7B00" stop-opacity="0"></stop></radialGradient><linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0E0E0E" stop-opacity="1"></stop><stop offset=".25" stop-color="#0E0E0E" stop-opacity="0"></stop></linearGradient></defs><rect width="800" height="380" fill="url(#glow)"></rect><rect x="0" y="261" width="46" height="119" fill="#191816"></rect><rect x="49" y="271" width="29" height="109" fill="#191816"></rect><rect x="84" y="268" width="60" height="112" fill="#191816"></rect><rect x="146" y="216" width="29" height="164" fill="#191816"></rect><rect x="176" y="269" width="28" height="111" fill="#191816"></rect><rect x="207" y="272" width="52" height="108" fill="#191816"></rect><rect x="260" y="210" width="31" height="170" fill="#191816"></rect><rect x="294" y="208" width="29" height="172" fill="#191816"></rect><rect x="323" y="200" width="40" height="180" fill="#191816"></rect><rect x="368" y="207" width="29" height="173" fill="#191816"></rect><rect x="401" y="274" width="51" height="106" fill="#191816"></rect><rect x="453" y="209" width="28" height="171" fill="#191816"></rect><rect x="487" y="243" width="34" height="137" fill="#191816"></rect><rect x="524" y="211" width="35" height="169" fill="#191816"></rect><rect x="559" y="209" width="45" height="171" fill="#191816"></rect><rect x="610" y="267" width="37" height="113" fill="#191816"></rect><rect x="651" y="233" width="38" height="147" fill="#191816"></rect><rect x="689" y="208" width="30" height="172" fill="#191816"></rect><rect x="719" y="217" width="39" height="163" fill="#191816"></rect><rect x="763" y="226" width="60" height="154" fill="#191816"></rect><path d="M631.1 354 L653.2 161.0 L660 144 L666.8 161.0 L688.9 354 M631.1 354.0 L685.7428571428571 326.42857142857144 M688.9 354.0 L634.2571428571429 326.42857142857144 M634.2571428571429 326.42857142857144 L685.7428571428571 326.42857142857144 M634.2571428571429 326.42857142857144 L682.5857142857143 298.85714285714283 M685.7428571428571 326.42857142857144 L637.4142857142857 298.85714285714283 M637.4142857142857 298.85714285714283 L682.5857142857143 298.85714285714283 M637.4142857142857 298.85714285714283 L679.4285714285714 271.2857142857143 M682.5857142857143 298.85714285714283 L640.5714285714286 271.2857142857143 M640.5714285714286 271.2857142857143 L679.4285714285714 271.2857142857143 M640.5714285714286 271.2857142857143 L676.2714285714286 243.71428571428572 M679.4285714285714 271.2857142857143 L643.7285714285714 243.71428571428572 M643.7285714285714 243.71428571428572 L676.2714285714286 243.71428571428572 M643.7285714285714 243.71428571428572 L673.1142857142858 216.14285714285714 M676.2714285714286 243.71428571428572 L646.8857142857142 216.14285714285714 M646.8857142857142 216.14285714285714 L673.1142857142858 216.14285714285714 M646.8857142857142 216.14285714285714 L669.9571428571428 188.57142857142858 M673.1142857142858 216.14285714285714 L650.0428571428572 188.57142857142858 M650.0428571428572 188.57142857142858 L669.9571428571428 188.57142857142858 M650.0428571428572 188.57142857142858 L666.8 161.0 M669.9571428571428 188.57142857142858 L653.2 161.0 M653.2 161.0 L666.8 161.0 M620.9 167.8 L699.1 167.8 M620.9 167.8 L649.8 159.3 M699.1 167.8 L670.2 159.3 M610.7 196.7 L709.3 196.7 M610.7 196.7 L649.8 188.2 M709.3 196.7 L670.2 188.2" fill="none" stroke="#3A3935" stroke-width="1.6" stroke-linejoin="round"></path><rect x="-10" y="221" width="54" height="159" fill="#111110"></rect><rect x="52" y="178" width="77" height="202" fill="#111110"></rect><rect x="135" y="215" width="72" height="165" fill="#111110"></rect><rect x="170" y="197" width="2" height="18" fill="#111110"></rect><rect x="214" y="211" width="65" height="169" fill="#111110"></rect><rect x="284" y="172" width="65" height="208" fill="#111110"></rect><rect x="355" y="249" width="46" height="131" fill="#111110"></rect><rect x="377" y="231" width="2" height="18" fill="#111110"></rect><rect x="408" y="213" width="50" height="167" fill="#111110"></rect><rect x="462" y="185" width="46" height="195" fill="#111110"></rect><rect x="484" y="167" width="2" height="18" fill="#111110"></rect><rect x="511" y="177" width="75" height="203" fill="#111110"></rect><rect x="547" y="159" width="2" height="18" fill="#111110"></rect><rect x="590" y="245" width="73" height="135" fill="#111110"></rect><rect x="668" y="259" width="49" height="121" fill="#111110"></rect><rect x="725" y="163" width="74" height="217" fill="#111110"></rect><rect x="5" y="255" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="14" y="255" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="32" y="255" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect class="tw" style="animation-delay:1.6s" x="32" y="267" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="-4" y="279" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="32" y="279" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="14" y="291" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="5" y="303" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="-4" y="327" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="14" y="327" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="32" y="327" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="14" y="339" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="94" y="188" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="103" y="188" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="112" y="188" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="67" y="200" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="76" y="200" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="103" y="200" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="58" y="212" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="94" y="212" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="103" y="212" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="67" y="224" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="85" y="236" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:1.7s" x="58" y="248" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="67" y="248" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="67" y="260" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="103" y="260" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="67" y="272" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="76" y="272" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="103" y="272" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="112" y="272" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="58" y="284" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:5.8s" x="94" y="284" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="76" y="296" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="58" y="308" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="112" y="308" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:3.7s" x="85" y="320" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="67" y="332" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:0.6s" x="76" y="332" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="168" y="237" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="177" y="237" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="141" y="249" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="159" y="249" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="168" y="249" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="177" y="249" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="195" y="249" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="141" y="261" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="159" y="261" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="168" y="261" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="159" y="273" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="177" y="273" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="195" y="273" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="168" y="297" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="141" y="309" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:6.0s" x="159" y="309" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="186" y="309" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="159" y="321" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="177" y="321" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:3.0s" x="150" y="333" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:0.4s" x="256" y="233" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="220" y="245" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="229" y="257" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="220" y="269" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="238" y="269" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="229" y="281" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:1.8s" x="247" y="281" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="256" y="281" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="265" y="293" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="220" y="305" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="247" y="305" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:2.2s" x="256" y="317" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:3.2s" x="229" y="329" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="247" y="329" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="265" y="329" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect class="tw" style="animation-delay:1.5s" x="335" y="182" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="299" y="194" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="326" y="206" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="290" y="218" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="290" y="230" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:4.5s" x="299" y="230" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="317" y="230" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect class="tw" style="animation-delay:3.0s" x="317" y="242" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="308" y="254" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="335" y="254" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:5.0s" x="317" y="278" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="335" y="278" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="299" y="290" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="317" y="302" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="335" y="302" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="290" y="314" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="299" y="314" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="326" y="326" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="370" y="259" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect class="tw" style="animation-delay:5.2s" x="388" y="259" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="361" y="283" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="370" y="283" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="379" y="283" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:4.3s" x="361" y="307" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="388" y="307" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="379" y="319" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="370" y="343" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="388" y="343" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:3.1s" x="423" y="223" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="414" y="235" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="432" y="247" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="441" y="247" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="450" y="247" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="432" y="259" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="414" y="271" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="423" y="271" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="441" y="271" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="441" y="283" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="414" y="295" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:3.6s" x="423" y="295" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:2.4s" x="432" y="295" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="432" y="307" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="441" y="307" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:0.5s" x="432" y="319" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="450" y="319" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="450" y="331" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="432" y="343" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="441" y="343" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:0.4s" x="450" y="343" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="468" y="207" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="495" y="219" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="468" y="255" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="468" y="279" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:3.3s" x="486" y="279" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="495" y="279" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:3.0s" x="486" y="291" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:2.8s" x="495" y="291" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="495" y="303" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="477" y="327" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect class="tw" style="animation-delay:5.3s" x="526" y="187" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="553" y="187" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="562" y="187" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="571" y="199" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="517" y="211" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="526" y="211" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:2.0s" x="553" y="211" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="562" y="211" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="571" y="211" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:2.4s" x="517" y="223" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="535" y="223" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="517" y="247" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:0.5s" x="544" y="247" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect class="tw" style="animation-delay:3.3s" x="562" y="247" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="571" y="247" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="526" y="259" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="553" y="259" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="517" y="271" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="526" y="271" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="535" y="271" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="517" y="283" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="526" y="283" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="544" y="283" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="553" y="283" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:5.9s" x="544" y="307" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="526" y="319" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="535" y="319" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="544" y="319" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:5.5s" x="553" y="319" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="517" y="331" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:3.7s" x="544" y="331" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="553" y="331" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="605" y="267" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="632" y="267" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="650" y="267" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="623" y="279" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="605" y="291" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="623" y="291" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="632" y="315" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:2.1s" x="641" y="315" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="623" y="327" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect class="tw" style="animation-delay:4.8s" x="632" y="327" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:4.0s" x="650" y="327" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="614" y="339" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="674" y="269" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="683" y="269" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="692" y="269" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="701" y="269" width="4" height="5" fill="#FFB36B" opacity="0.9"></rect><rect x="674" y="281" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="710" y="293" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="683" y="305" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="692" y="305" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="692" y="329" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="701" y="329" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="758" y="185" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:0.7s" x="776" y="185" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect class="tw" style="animation-delay:0.2s" x="731" y="197" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="758" y="197" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="767" y="197" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:5.7s" x="758" y="209" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect class="tw" style="animation-delay:4.5s" x="731" y="221" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="785" y="221" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="785" y="233" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="758" y="245" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="758" y="257" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="785" y="257" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="758" y="269" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="776" y="269" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="749" y="281" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="785" y="281" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="767" y="293" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="785" y="293" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><rect x="749" y="305" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="758" y="305" width="4" height="5" fill="#FFB36B" opacity="0.7"></rect><rect x="776" y="305" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="731" y="341" width="4" height="5" fill="#FFB36B" opacity="0.5"></rect><rect x="785" y="341" width="4" height="5" fill="#FFB36B" opacity="0.35"></rect><path d="M116.0 354 L142.0 124.0 L150 104 L158.0 124.0 L184.0 354 M116.0 354.0 L180.28571428571428 321.14285714285717 M184.0 354.0 L119.71428571428572 321.14285714285717 M119.71428571428572 321.14285714285717 L180.28571428571428 321.14285714285717 M119.71428571428572 321.14285714285717 L176.57142857142856 288.2857142857143 M180.28571428571428 321.14285714285717 L123.42857142857143 288.2857142857143 M123.42857142857143 288.2857142857143 L176.57142857142856 288.2857142857143 M123.42857142857143 288.2857142857143 L172.85714285714286 255.42857142857144 M176.57142857142856 288.2857142857143 L127.14285714285714 255.42857142857144 M127.14285714285714 255.42857142857144 L172.85714285714286 255.42857142857144 M127.14285714285714 255.42857142857144 L169.14285714285714 222.57142857142858 M172.85714285714286 255.42857142857144 L130.85714285714286 222.57142857142858 M130.85714285714286 222.57142857142858 L169.14285714285714 222.57142857142858 M130.85714285714286 222.57142857142858 L165.42857142857142 189.71428571428572 M169.14285714285714 222.57142857142858 L134.57142857142858 189.71428571428572 M134.57142857142858 189.71428571428572 L165.42857142857142 189.71428571428572 M134.57142857142858 189.71428571428572 L161.71428571428572 156.85714285714286 M165.42857142857142 189.71428571428572 L138.28571428571428 156.85714285714286 M138.28571428571428 156.85714285714286 L161.71428571428572 156.85714285714286 M138.28571428571428 156.85714285714286 L158.0 124.0 M161.71428571428572 156.85714285714286 L142.0 124.0 M142.0 124.0 L158.0 124.0 M104.0 132.0 L196.0 132.0 M104.0 132.0 L138.0 122.0 M196.0 132.0 L162.0 122.0 M92.0 166.0 L208.0 166.0 M92.0 166.0 L138.0 156.0 M208.0 166.0 L162.0 156.0" fill="none" stroke="#3A3935" stroke-width="1.6" stroke-linejoin="round"></path><path d="M-20 170.0 Q42.0 184.0 104.0 140.0 Q362.45 220.60000000000002 620.9 174.60000000000002 Q720.45 214.60000000000002 820 198.60000000000002" fill="none" stroke="#4A4844" stroke-width="1.1"></path><path d="M-20 170.0 Q88.0 184.0 196.0 140.0 Q447.55 220.60000000000002 699.1 174.60000000000002 Q759.55 214.60000000000002 820 198.60000000000002" fill="none" stroke="#4A4844" stroke-width="1.1"></path><path d="M-20 204.0 Q36.0 218.0 92.0 174.0 Q351.35 249.5 610.7 203.5 Q715.35 243.5 820 227.5" fill="none" stroke="#4A4844" stroke-width="1.1"></path><path d="M-20 204.0 Q94.0 218.0 208.0 174.0 Q458.65 249.5 709.3 203.5 Q764.65 243.5 820 227.5" fill="none" stroke="#4A4844" stroke-width="1.1"></path><path class="flow" d="M-20 170.0 Q42.0 184.0 104.0 140.0 Q362.45 220.60000000000002 620.9 174.60000000000002 Q720.45 214.60000000000002 820 198.60000000000002" fill="none" stroke="#FF9A3D" stroke-width="2.2" stroke-linecap="round" style="animation-delay:0.0s"></path><path class="flow" d="M-20 170.0 Q88.0 184.0 196.0 140.0 Q447.55 220.60000000000002 699.1 174.60000000000002 Q759.55 214.60000000000002 820 198.60000000000002" fill="none" stroke="#FF9A3D" stroke-width="2.2" stroke-linecap="round" style="animation-delay:-1.3s"></path><path class="flow" d="M-20 204.0 Q36.0 218.0 92.0 174.0 Q351.35 249.5 610.7 203.5 Q715.35 243.5 820 227.5" fill="none" stroke="#FF9A3D" stroke-width="2.2" stroke-linecap="round" style="animation-delay:-2.6s"></path><path class="flow" d="M-20 204.0 Q94.0 218.0 208.0 174.0 Q458.65 249.5 709.3 203.5 Q764.65 243.5 820 227.5" fill="none" stroke="#FF9A3D" stroke-width="2.2" stroke-linecap="round" style="animation-delay:-3.9s"></path><rect y="354" width="800" height="26" fill="#0B0B0A"></rect><rect width="800" height="380" fill="url(#fade)"></rect></svg>
+<div style="position: relative; z-index: 1; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap">
+<span><img class="lg-day" src="/landing/assets/915de05aaf826f819f98c0cd1bea330c.svg" alt="" style="height: 52px; width: auto"><img class="lg-night" src="/landing/assets/2cc13aa9e6dfd483faf9f142aa792c8e.svg" alt="" style="height: 52px; width: auto"></span>
+<span style="display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--bp-ink-2); border: 1px solid var(--bp-line); background: var(--bp-chip); border-radius: 999px; padding: 6px 12px"><span style="width: 7px; height: 7px; border-radius: 50%; background: #FF7B00; box-shadow: 0 0 0 3px rgba(255,123,0,.2)"></span>For Meralco-served homes &amp; rentals</span>
+</div>
+<div style="position: relative; z-index: 1; display: flex; flex-direction: column; gap: 14px; margin-top: 12px">
+<p style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; color: var(--bp-accent)">ELECTRICITY SAVINGS PLATFORM</p>
+<p style="margin: 0; font-family: 'Inter Tight', Inter, sans-serif; font-weight: 800; font-size: clamp(32px, 3vw, 44px); line-height: 1.04; letter-spacing: -0.03em; max-width: 480px">Welcome back.<br><span style="color: #8A8A85">Your bill is waiting.</span></p>
+<p style="margin: 0; font-size: 15px; line-height: 1.6; color: var(--bp-muted); max-width: 440px">Pick up where you left off — your savings plan, appliance list and billing history are right where you left them.</p>
+</div>
+<div style="position: relative; z-index: 1; max-width: 460px; background: var(--bp-card); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--bp-line); border-radius: 16px; padding: 4px 20px">
+<div style="display: flex; gap: 14px; align-items: center; padding: 14px 0"><span style="width: 36px; height: 36px; flex: none; border-radius: 10px; background: rgba(255,123,0,.14); border: 1px solid rgba(255,123,0,.3); display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FF9A3D" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"></path><path d="M7 12h10"></path></svg></span><div><p style="margin: 0; font-size: 14px; font-weight: 600">Privacy-first bill scan</p><p style="margin: 2px 0 0; font-size: 13px; color: var(--bp-muted)">Reads kWh and charges, then deletes the photo</p></div></div><div style="display: flex; gap: 14px; align-items: center; padding: 14px 0; border-top: 1px solid var(--bp-line)"><span style="width: 36px; height: 36px; flex: none; border-radius: 10px; background: rgba(255,123,0,.14); border: 1px solid rgba(255,123,0,.3); display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FF9A3D" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"></rect><path d="M8 6h8M8 10h8M8 14h5"></path></svg></span><div><p style="margin: 0; font-size: 14px; font-weight: 600">8-item Meralco billing engine</p><p style="margin: 2px 0 0; font-size: 13px; color: var(--bp-muted)">Generation to taxes, computed line by line</p></div></div><div style="display: flex; gap: 14px; align-items: center; padding: 14px 0; border-top: 1px solid var(--bp-line)"><span style="width: 36px; height: 36px; flex: none; border-radius: 10px; background: rgba(255,123,0,.14); border: 1px solid rgba(255,123,0,.3); display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FF9A3D" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5a6 6 0 0 1 0 7"></path><path d="M9.5 6a10 10 0 0 1 0 12"></path><path d="M13 3.5a14 14 0 0 1 0 17"></path></svg></span><div><p style="margin: 0; font-size: 14px; font-weight: 600">NFC &amp; QR rental portals</p><p style="margin: 2px 0 0; font-size: 13px; color: var(--bp-muted)">Tenants tap a card to see their share</p></div></div>
+</div>
+<div style="position: relative; z-index: 1; display: flex; max-width: 460px"><div style="flex: 1; padding: 0 16px; padding-left: 0;"><p style="margin: 0; font-family: 'Inter Tight', Inter, sans-serif; font-size: 24px; font-weight: 700; letter-spacing: -0.02em">₱0</p><p style="margin: 2px 0 0; font-size: 12px; color: var(--bp-muted)">hardware to install</p></div><div style="flex: 1; padding: 0 16px; border-left: 1px solid var(--bp-line);"><p style="margin: 0; font-family: 'Inter Tight', Inter, sans-serif; font-size: 24px; font-weight: 700; letter-spacing: -0.02em">8-item</p><p style="margin: 2px 0 0; font-size: 12px; color: var(--bp-muted)">official formula</p></div><div style="flex: 1; padding: 0 16px; border-left: 1px solid var(--bp-line);"><p style="margin: 0; font-family: 'Inter Tight', Inter, sans-serif; font-size: 24px; font-weight: 700; letter-spacing: -0.02em">11</p><p style="margin: 2px 0 0; font-size: 12px; color: var(--bp-muted)">languages</p></div></div>
+<p style="position: relative; z-index: 1; margin: auto 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; font-size: 12px; color: var(--bp-muted)"><span style="display: inline-flex; align-items: center; gap: 6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FF9A3D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z"></path></svg>Data Privacy Act compliant</span><span>Photos deleted after scanning</span><span>Not affiliated with Meralco</span></p>
+</aside>
+
+<main style="flex: 1 1 56%; min-width: 0; position: relative; overflow: hidden; display: flex; flex-direction: column; padding: 24px clamp(16px, 4vw, 48px)">
+<div class="blob" aria-hidden="true" style="width: 420px; height: 420px; right: -180px; bottom: -160px; background: #FFC28A; opacity: 0.35; animation-duration: 24s"></div>
+<div style="position: relative; display: flex; justify-content: space-between; align-items: center; gap: 16px">
+<a href="/" style="display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; text-decoration: none; color: var(--ink-2); padding: 10px 0"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>Back to home</a>
+<button type="button" class="theme-toggle" aria-label="{{themeLabel}}" title="{{themeLabel}}" onClick="{{toggleTheme}}" style="width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0">
+<sc-if value="{{isDark}}" hint-placeholder-val="{{ false }}"><svg class="iconswap" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FF9A3D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg></sc-if>
+<sc-if value="{{isLight}}" hint-placeholder-val="{{ true }}"><svg class="iconswap" aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg></sc-if>
+</button>
+</div>
+
+<div style="position: relative; flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px 0">
+<div class="card rise" style="width: 100%; max-width: 440px; background: var(--surface); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--card-shadow); padding: 36px; box-sizing: border-box; display: flex; flex-direction: column; gap: 22px">
+
+<div class="card-logo" style="justify-content: center">
+<img class="lg-day" src="/landing/assets/915de05aaf826f819f98c0cd1bea330c.svg" alt="SmartWatts" style="height: 48px; width: auto">
+<img class="lg-night" src="/landing/assets/2cc13aa9e6dfd483faf9f142aa792c8e.svg" alt="SmartWatts" style="height: 48px; width: auto">
+</div>
+
+<nav class="seg rise d1" aria-label="Account" style="display: flex; padding: 4px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line)">
+<a href="/login" aria-current="page" style="flex: 1; text-align: center; padding: 10px; border-radius: 9px; background: var(--surface); box-shadow: 0 1px 3px rgba(14,14,14,.12); font-size: 14px; font-weight: 600; text-decoration: none; color: var(--ink)">Log in</a>
+<a href="/register" style="flex: 1; text-align: center; padding: 10px; border-radius: 9px; font-size: 14px; font-weight: 600; text-decoration: none; color: var(--muted)">Sign up</a>
+</nav>
+
+<sc-if value="{{done}}" hint-placeholder-val="{{ false }}">
+<div class="rise" role="status" style="border: 1px solid var(--line); background: var(--surface-2); border-radius: 14px; padding: 20px; display: flex; align-items: center; gap: 14px">
+<span style="width: 40px; height: 40px; border-radius: 50%; background: #FF7B00; display: flex; align-items: center; justify-content: center; flex: none"><span class="spinner"></span></span>
+<div><p style="margin: 0; font-weight: 600">{{doneTitle}}</p><p style="margin: 4px 0 0; font-size: 14px; color: var(--muted)">Loading your bills and savings plan.</p></div>
+</div>
+</sc-if>
+
+<sc-if value="{{otpStep}}" hint-placeholder-val="{{ false }}">
+<div class="rise" style="display: flex; flex-direction: column; gap: 18px">
+<div style="text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px">
+<span style="width: 52px; height: 52px; border-radius: 14px; background: var(--accent-soft); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center"><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#FF7B00" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M3 7l9 6 9-6"></path></svg></span>
+<h1 style="margin: 0; font-family: 'Inter Tight', Inter, sans-serif; font-weight: 800; font-size: 26px; letter-spacing: -0.025em">Enter verification code</h1>
+<p style="margin: 0; font-size: 14px; line-height: 1.55; color: var(--muted)">We sent a 6-digit code to <b style="color: var(--ink)">{{maskedDest}}</b>. It expires in 10 minutes.</p>
+</div>
+<div style="position: relative">
+<div aria-hidden="true" style="display: flex; gap: 8px">
+<sc-for list="{{otpBoxes}}" as="b" hint-placeholder-count="6">
+<span style="flex: 1; min-width: 0; height: 56px; border-radius: 12px; border: 1.5px solid {{b.border}}; background: var(--surface); box-shadow: {{b.ring}}; display: flex; align-items: center; justify-content: center; font-family: 'Inter Tight', Inter, sans-serif; font-size: 24px; font-weight: 700; color: var(--ink); transition: border-color .2s ease, box-shadow .2s ease">{{b.ch}}<sc-if value="{{b.caret}}" hint-placeholder-val="{{ false }}"><span class="caret"></span></sc-if></span>
+</sc-for>
+</div>
+<input class="otp-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-label="6-digit verification code" value="{{otp}}" onChange="{{setOtp}}" onFocus="{{otpFocus}}" onBlur="{{otpBlur}}" style="position: absolute; inset: 0; width: 100%; height: 100%; font-size: 16px; cursor: text">
+</div>
+<sc-if value="{{otpErr}}" hint-placeholder-val="{{ false }}"><span class="shake" style="font-size: 13px; color: var(--err); text-align: center">{{otpErr}}</span></sc-if>
+<button type="button" class="btn-primary" onClick="{{verify}}" style="height: 50px; border: 0; border-radius: 12px; background: #FF7B00; color: #0E0E0E; font-family: inherit; font-size: 16px; font-weight: 600; cursor: pointer">Verify</button>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 14px">
+<button type="button" class="link-btn" onClick="{{otpBack}}" style="color: var(--muted); font-weight: 500">← Back</button>
+<sc-if value="{{canResend}}" hint-placeholder-val="{{ false }}"><button type="button" class="link-btn" onClick="{{resend}}">Resend code</button></sc-if>
+<sc-if value="{{waitResend}}" hint-placeholder-val="{{ true }}"><span style="color: var(--muted)">Resend in 0:{{secsPad}}</span></sc-if>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{showForm}}" hint-placeholder-val="{{ true }}">
+<div class="rise d2" style="text-align: center">
+<h1 style="margin: 0; font-family: 'Inter Tight', Inter, sans-serif; font-weight: 800; font-size: 28px; letter-spacing: -0.025em">Welcome back</h1>
+<p style="margin: 6px 0 0; font-size: 15px; color: var(--muted)">Log in to see your bill and savings plan.</p>
+</div>
+<sc-if value="{{info}}" hint-placeholder-val="{{ false }}"><p role="status" style="margin: 0; padding: 12px 14px; border-radius: 12px; background: var(--accent-soft); border: 1px solid var(--line); font-size: 14px; color: var(--ink-2); text-align: center">{{info}}</p></sc-if>
+
+<button type="button" class="btn-google rise d3" onClick="{{google}}" style="height: 50px; border-radius: 12px; border: 1px solid var(--line-3); background: var(--surface); color: var(--ink); font-family: inherit; font-size: 15px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 12px">
+<span aria-hidden="true" style="width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line-3); display: flex; align-items: center; justify-content: center; font-family: 'Inter Tight', Inter, sans-serif; font-size: 13px; font-weight: 800">G</span>
+Continue with Google
+</button>
+
+<div class="rise d3" style="display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--muted)"><span style="flex: 1; height: 1px; background: var(--line)"></span>or log in with email<span style="flex: 1; height: 1px; background: var(--line)"></span></div>
+
+<form onSubmit="{{submit}}" novalidate="novalidate" style="display: flex; flex-direction: column; gap: 16px">
+<div class="rise d4" style="display: flex; flex-direction: column; gap: 7px">
+<label for="li-email" style="font-size: 14px; font-weight: 600">Email</label>
+<input id="li-email" class="inp" type="email" autocomplete="email" placeholder="you@email.com" value="{{email}}" onChange="{{setEmail}}" style="height: 48px; border-radius: 10px; border: 1px solid {{emailBorder}}; background: var(--surface); color: var(--ink); padding: 0 14px; font-size: 15px">
+<sc-if value="{{emailErr}}" hint-placeholder-val="{{ false }}"><span class="shake" style="font-size: 13px; color: var(--err)">{{emailErr}}</span></sc-if>
+</div>
+<div class="rise d5" style="display: flex; flex-direction: column; gap: 7px">
+<div style="display: flex; justify-content: space-between; align-items: baseline"><label for="li-pass" style="font-size: 14px; font-weight: 600">Password</label><a href="/forgot-password" style="font-size: 13px; font-weight: 600; color: var(--accent-text); text-decoration: none">Forgot password?</a></div>
+<div style="position: relative">
+<input id="li-pass" class="inp" type="{{passType}}" autocomplete="current-password" placeholder="Your password" value="{{password}}" onChange="{{setPassword}}" style="width: 100%; box-sizing: border-box; height: 48px; border-radius: 10px; border: 1px solid {{passBorder}}; background: var(--surface); color: var(--ink); padding: 0 52px 0 14px; font-size: 15px">
+<button type="button" onClick="{{toggleShow}}" aria-label="{{showLabel}}" style="position: absolute; right: 2px; top: 2px; width: 44px; height: 44px; border: 0; background: none; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center">
+<sc-if value="{{show}}" hint-placeholder-val="{{ false }}"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"></path><path d="M10.6 5.1A10 10 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3.2 3.9M6.6 6.6C3.9 8.4 2 12 2 12s4 7 10 7a9.6 9.6 0 0 0 5.4-1.6"></path><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path></svg></sc-if>
+<sc-if value="{{hidden}}" hint-placeholder-val="{{ true }}"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg></sc-if>
+</button>
+</div>
+<sc-if value="{{passErr}}" hint-placeholder-val="{{ false }}"><span class="shake" style="font-size: 13px; color: var(--err)">{{passErr}}</span></sc-if>
+</div>
+<label class="rise d6" style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2); cursor: pointer">
+<input type="checkbox" checked="{{remember}}" onChange="{{toggleRemember}}" style="width: 18px; height: 18px; accent-color: #FF7B00; margin: 0">
+Keep me logged in
+</label>
+<sc-if value="{{authErr}}" hint-placeholder-val="{{ false }}"><span class="shake" role="alert" style="font-size: 14px; color: var(--err); text-align: center">{{authErr}}</span></sc-if>
+<button type="submit" class="btn-primary rise d6" style="height: 50px; border: 0; border-radius: 12px; background: #FF7B00; color: #0E0E0E; font-family: inherit; font-size: 16px; font-weight: 600; cursor: pointer">{{submitLabel}}</button>
+</form>
+</sc-if>
+
+<div class="rise d7" style="display: flex; gap: 14px; align-items: flex-start; padding: 16px; border-radius: 14px; background: var(--accent-soft); border: 1px solid var(--line)">
+<span aria-hidden="true" style="width: 36px; height: 36px; flex: none; border-radius: 10px; background: #FF7B00; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0E0E0E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5a6 6 0 0 1 0 7"></path><path d="M9.5 6a10 10 0 0 1 0 12"></path><path d="M13 3.5a14 14 0 0 1 0 17"></path></svg></span>
+<p style="margin: 0; font-size: 13px; line-height: 1.55; color: var(--ink-2)"><b style="color: var(--ink)">Tenant? No login needed.</b> Your SmartWatts NFC card holds your portal link — just tap it on your phone and it opens in your browser.</p>
+</div>
+</div>
+</div>
+
+<p style="position: relative; margin: 0; font-size: 12px; color: var(--muted); text-align: center">© 2026 SmartWatts · Not affiliated with Meralco</p>
+</main>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":960}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    let theme = 'light';
+    try {
+      const saved = window.localStorage.getItem('sw-theme');
+      if (saved === 'dark' || saved === 'light') theme = saved;
+      else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) theme = 'dark';
+    } catch (err) {}
+    let info = '';
+    try { if (new URLSearchParams(window.location.search).get('reset') === '1') info = 'Password updated. Log in with your new password.'; } catch (err) {}
+    this.state = { theme: theme, email: '', password: '', show: false, remember: true, tried: false, done: false, via: 'email', otpStep: false, otp: '', otpErr: '', otpFocused: false, secs: 0, busy: false, authErr: '', info: info };
+  }
+  componentDidMount() {
+    window.SWAuthReady.then(async (A) => {
+      const u = await A.currentUser();
+      if (await A.isComplete(u)) return this.finish(A, 'email');
+      // Signed in with email but not verified yet -> straight to the code step.
+      if (u && !u.isAnonymous && u.email) { this.setState({ email: u.email }); this.toOtp(A); }
+    }).catch(() => {});
+  }
+  componentWillUnmount() { clearInterval(this.otpTimer); }
+  startTimer() {
+    clearInterval(this.otpTimer);
+    this.setState({ secs: 60 });
+    this.otpTimer = setInterval(() => {
+      const n = Math.max(0, (this.state.secs || 0) - 1);
+      this.setState({ secs: n });
+      if (n <= 0) clearInterval(this.otpTimer);
+    }, 1000);
+  }
+  finish(A, via) {
+    clearInterval(this.otpTimer);
+    this.setState({ done: true, otpStep: false, via: via || 'email' });
+    A.goToDashboard();
+  }
+  async toOtp(A) {
+    this.setState({ otpStep: true, otp: '', otpErr: '', busy: false });
+    try {
+      const r = await A.sendVerifyCode();
+      if (r && r.alreadyVerified) return this.finish(A, 'email');
+      this.startTimer();
+    } catch (err) { this.setState({ otpErr: A.friendlyError(err) }); }
+  }
+  otpVals(dest) {
+    const s = this.state;
+    const code = s.otp || '';
+    const boxes = [0, 1, 2, 3, 4, 5].map((i) => {
+      const active = s.otpFocused && (i === code.length || (code.length === 6 && i === 5));
+      const bad = !!s.otpErr;
+      return {
+        ch: code[i] || '',
+        caret: s.otpFocused && i === code.length,
+        border: bad ? 'var(--err)' : (active ? '#FF7B00' : (code[i] ? 'var(--ink-2)' : 'var(--line-3)')),
+        ring: active && !bad ? '0 0 0 4px rgba(255,123,0,.18)' : 'none'
+      };
+    });
+    let masked = dest || '';
+    if (masked.indexOf('@') > 0) { const parts = masked.split('@'); masked = parts[0].slice(0, 2) + '•••@' + parts[1]; }
+    const secs = s.secs || 0;
+    return {
+      otp: code, otpBoxes: boxes, maskedDest: masked, otpErr: s.otpErr || '',
+      setOtp: (e) => this.setState({ otp: e.target.value.replace(/\D/g, '').slice(0, 6), otpErr: '' }),
+      otpFocus: () => this.setState({ otpFocused: true }),
+      otpBlur: () => this.setState({ otpFocused: false }),
+      canResend: secs <= 0, waitResend: secs > 0, secsPad: (secs < 10 ? '0' : '') + secs,
+      resend: async () => {
+        this.setState({ otp: '', otpErr: '' });
+        const A = await window.SWAuthReady;
+        try { await A.sendVerifyCode(); this.startTimer(); }
+        catch (err) { this.setState({ otpErr: A.friendlyError(err) }); }
+      }
+    };
+  }
+  validate(st) {
+    const e = (st.email || '').trim();
+    let emailErr = '';
+    if (!e) emailErr = 'Enter your email.';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) emailErr = 'That email doesn’t look right.';
+    let passErr = '';
+    if (!st.password) passErr = 'Enter your password.';
+    return { emailErr, passErr };
+  }
+  renderVals() {
+    const s = this.state;
+    const v = s.tried ? this.validate(s) : { emailErr: '', passErr: '' };
+    const ov = this.otpVals(s.email.trim());
+    return {
+      ...ov,
+      themeClass: s.theme === 'dark' ? 'dark' : 'light',
+      isDark: s.theme === 'dark', isLight: s.theme !== 'dark',
+      themeLabel: s.theme === 'dark' ? 'Switch to day mode' : 'Switch to night mode',
+      toggleTheme: (e) => {
+        const next = this.state.theme === 'dark' ? 'light' : 'dark';
+        try { window.localStorage.setItem('sw-theme', next); } catch (err) {}
+        const apply = () => new Promise((res) => this.setState({ theme: next }, res));
+        if (document.startViewTransition) {
+          const x = e && e.clientX ? e.clientX : window.innerWidth - 40;
+          const y = e && e.clientY ? e.clientY : 30;
+          const r = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+          try {
+            const vt = document.startViewTransition(apply);
+            vt.ready.then(() => {
+              document.documentElement.animate({ clipPath: ['circle(0px at ' + x + 'px ' + y + 'px)', 'circle(' + r + 'px at ' + x + 'px ' + y + 'px)'] }, { duration: 700, easing: 'cubic-bezier(.22,1,.36,1)', pseudoElement: '::view-transition-new(root)' });
+            }).catch(() => {});
+          } catch (err) { apply(); }
+        } else { apply(); }
+      },
+      email: s.email, password: s.password,
+      setEmail: (e) => this.setState({ email: e.target.value, authErr: '' }),
+      setPassword: (e) => this.setState({ password: e.target.value, authErr: '' }),
+      show: s.show, hidden: !s.show,
+      passType: s.show ? 'text' : 'password',
+      showLabel: s.show ? 'Hide password' : 'Show password',
+      toggleShow: () => this.setState({ show: !this.state.show }),
+      remember: s.remember,
+      toggleRemember: () => this.setState({ remember: !this.state.remember }),
+      emailErr: v.emailErr, passErr: v.passErr,
+      emailBorder: v.emailErr ? 'var(--err)' : 'var(--line-3)',
+      passBorder: v.passErr ? 'var(--err)' : 'var(--line-3)',
+      authErr: s.authErr || '', info: s.info || '',
+      submitLabel: s.busy ? 'Logging in…' : 'Log in',
+      done: s.done, notDone: !s.done, otpStep: s.otpStep && !s.done, showForm: !s.done && !s.otpStep,
+      otpBack: () => { clearInterval(this.otpTimer); this.setState({ otpStep: false, otp: '', otpErr: '' }); },
+      verify: async () => {
+        if ((this.state.otp || '').length < 6) { this.setState({ otpErr: 'Enter all 6 digits of the code.' }); return; }
+        const A = await window.SWAuthReady;
+        try { await A.confirmVerifyCode(this.state.otp); this.finish(A, 'email'); }
+        catch (err) { this.setState({ otpErr: A.friendlyError(err) }); }
+      },
+      doneTitle: s.via === 'google' ? 'Connecting to Google…' : 'Signing you in…',
+      google: async () => {
+        this.setState({ authErr: '', info: '' });
+        const A = await window.SWAuthReady;
+        try {
+          const user = await A.continueWithGoogle();
+          if (await A.isComplete(user)) this.finish(A, 'google');
+          else { this.setState({ email: user.email || '' }); this.toOtp(A); }
+        } catch (err) { this.setState({ authErr: A.friendlyError(err) }); }
+      },
+      submit: async (e) => {
+        if (e && e.preventDefault) e.preventDefault();
+        if (this.state.busy) return;
+        const r = this.validate(this.state);
+        this.setState({ tried: true, authErr: '', info: '' });
+        if (r.emailErr || r.passErr) return;
+        this.setState({ busy: true });
+        const A = await window.SWAuthReady;
+        try {
+          const user = await A.login(this.state.email.trim(), this.state.password, this.state.remember);
+          if (await A.isComplete(user)) this.finish(A, 'email');
+          else this.toOtp(A);
+        } catch (err) { this.setState({ busy: false, authErr: A.friendlyError(err) }); }
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

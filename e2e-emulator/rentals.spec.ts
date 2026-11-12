@@ -51,7 +51,7 @@ test("owner sets up a property, invites a tenant, bills them transparently, and 
   const ownerContext = await browser.newContext();
   const owner = await ownerContext.newPage();
   owner.on("dialog", (dialog) => dialog.accept());
-  await owner.goto("/");
+  await owner.goto("/dashboard");
 
   // Personal data created as an anonymous guest survives the upgrade to a permanent account.
   await nav(owner, "My Appliances");

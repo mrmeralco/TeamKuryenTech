@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 // Tier 1 (SmartWatts Personal) in local demo mode: no Firebase configured,
 // so personal data is stored on this device only.
 test.beforeEach(async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.evaluate(() => localStorage.clear());
   await page.reload();
 });

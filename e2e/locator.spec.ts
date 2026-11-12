@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 test("Business Center locator works without a Mapbox token", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.locator('[data-page="support"]').first().click();
   await page.getByRole("button", { name: "Find a Business Center" }).click();
 
@@ -39,7 +39,7 @@ test("Business Center locator works without a Mapbox token", async ({ page }) =>
 
 test("locator is usable at phone width without horizontal scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
+  await page.goto("/dashboard");
   // The sidebar is collapsed at phone width; open it and choose Help & Support.
   await page.locator("#mobileMore").click();
   await page.locator('#navigation [data-page="support"]').click();

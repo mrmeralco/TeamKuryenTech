@@ -11,9 +11,12 @@ from dataclasses import dataclass
 from typing import Annotated
 
 import firebase_admin
+import google.auth
 from fastapi import Depends, Header, HTTPException
 from firebase_admin import auth as firebase_auth
+from firebase_admin import credentials
 from firebase_admin.exceptions import FirebaseError
+from google.auth.credentials import AnonymousCredentials
 from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
 
 
@@ -37,7 +40,20 @@ def get_firebase_app():
     try:
         return firebase_admin.get_app()
     except ValueError:
-        return firebase_admin.initialize_app(options={"projectId": project_id})
+        # ID-token verification uses Google's public keys; without configured
+        # service credentials, use anonymous credentials rather than requiring
+        # write-capable Admin SDK credentials for this API's auth dependency.
+        try:
+            google.auth.default()
+            credential = None
+        except DefaultCredentialsError:
+            credential = _PublicKeysOnly()
+        return firebase_admin.initialize_app(credential, options={"projectId": project_id})
+
+
+class _PublicKeysOnly(credentials.Base):
+    def get_credential(self):
+        return AnonymousCredentials()
 
 
 def require_user(authorization: Annotated[str | None, Header()] = None) -> AuthUser:

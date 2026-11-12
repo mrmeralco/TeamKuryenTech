@@ -1,236 +1,142 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-test("notifications render and remain usable without a missing-symbol runtime error", async ({ page }) => {
+async function mockEmailVerification(page: Page) {
+  let verified = false;
+  const sentCodes: string[] = [];
+  await page.route("**/api/auth/email-code/verify/send", async (route) => {
+    expect(route.request().headers().authorization).toMatch(/^Bearer /);
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sent: true }) });
+  });
+  await page.route("**/api/auth/email-code/verify/confirm", async (route) => {
+    const request = route.request();
+    expect(request.headers().authorization).toMatch(/^Bearer /);
+    const body = request.postDataJSON() as { code?: string };
+    sentCodes.push(body.code ?? "");
+    if (body.code === "123456") verified = true;
+    await route.fulfill({ status: body.code === "123456" ? 200 : 400, contentType: "application/json", body: JSON.stringify(body.code === "123456" ? { verified: true } : { detail: "Invalid code." }) });
+  });
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ verified }) });
+  });
+  return { sentCodes };
+}
+
+test("public landing routes lead into guarded dashboard access", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.goto("/");
+
+  await page.goto("/dashboard");
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("link", { name: /Log in/i })).toBeVisible();
+  await page.goto("/login");
+  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+  await page.goto("/register");
+  await expect(page.getByRole("heading", { name: "Create your account" })).toBeVisible();
+  await expect(page.locator("#reg-email")).toBeVisible();
+  await page.goto("/forgot-password");
+  await expect(page.getByRole("heading", { name: /reset|password/i }).first()).toBeVisible();
+  await expect(pageErrors).toEqual([]);
+});
+
+test("email registration verifies by OTP, persists the session and personal records, then signs in again", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  const verification = await mockEmailVerification(page);
+
+  await page.goto("/register");
+  const email = `landing-emulator-${Date.now()}@example.invalid`;
+  const password = `Emulator-${crypto.randomUUID()}-9!`;
+  await page.locator("#reg-name").fill("SmartWatts Landing Tester");
+  await page.locator("#reg-email").fill(email);
+  await page.locator("#reg-password").fill(password);
+  await page.getByRole("button", { name: "Create account with email" }).click();
+  await expect(page).toHaveURL(/\/login\?verify=1$/);
+  await expect(page.getByRole("heading", { name: "Enter verification code" })).toBeVisible({ timeout: 15_000 });
+  await page.getByLabel("6-digit verification code").fill("123456");
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
   await expect(page.locator("#navigation")).toBeVisible();
-  await page.locator('#navigation [data-page="notifications"]').click();
-  await expect(page.locator("#content")).toContainText("Sample Usage Alert");
-  await expect(page.locator("#content .alert").first()).toHaveAttribute("data-notif-id", "notif-seed-1");
-  await page.locator('#content [data-action="markRead"]').click();
-  await expect(page.locator("#content .unread-dot")).toHaveCount(0);
-  await expect(page.locator("#notificationBadge")).toHaveCSS("display", "none");
+
+  const account = await page.evaluate(async () => {
+    const { auth } = await import("/src/lib/firebase.ts");
+    await auth?.authStateReady();
+    return {
+      uid: auth?.currentUser?.uid ?? null,
+      email: auth?.currentUser?.email ?? null,
+      anonymous: auth?.currentUser?.isAnonymous ?? true,
+      provider: auth?.currentUser?.providerData[0]?.providerId ?? null,
+    };
+  });
+  expect(account).toMatchObject({ email, anonymous: false, provider: "password" });
+  expect(account.uid).toBeTruthy();
+  expect(verification.sentCodes).toEqual(["123456"]);
+
+  await page.evaluate(async () => {
+    const store = await import("/src/lib/personal/store.ts");
+    await store.saveUserProfile({ displayName: "SmartWatts Landing Tester", preferredLanguage: "tl" });
+    await store.saveAppliance({
+      name: "Landing Test Refrigerator",
+      category: "refrigeration",
+      watts: 0,
+      quantity: 1,
+      hoursPerDay: 24,
+      daysPerWeek: 7,
+      scheduleNote: "Emulator-only record.",
+      source: "manual",
+      testedKwhMonth: 26.1,
+    });
+  });
+  await page.reload();
+  await expect(page.locator("#navigation")).toBeVisible();
+  expect(await page.evaluate(async () => (await import("/src/lib/firebase.ts")).auth?.currentUser?.uid ?? null)).toBe(account.uid);
+  expect(await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).loadPreferredLanguage())).toBe("tl");
+  expect(await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).listAppliances())).toMatchObject([
+    { name: "Landing Test Refrigerator", testedKwhMonth: 26.1 },
+  ]);
+
+  await page.locator("#logoutButton").click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.goto("/login");
+  await page.locator("#li-email").fill(email);
+  await page.locator("#li-pass").fill(password);
+  await page.getByRole("button", { name: "Log in", exact: true }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect.poll(() => page.evaluate(async () => {
+    const { auth } = await import("/src/lib/firebase.ts");
+    await auth?.authStateReady();
+    return auth?.currentUser?.uid ?? null;
+  })).toBe(account.uid);
   expect(pageErrors).toEqual([]);
 });
 
-test("email registration links the anonymous UID and persists profile and tested-energy appliance data", async ({ browser }) => {
+test("Google login uses Firebase Auth Emulator and stays behind the verified-session guard", async ({ page }) => {
   const pageErrors: string[] = [];
-  const context = await browser.newContext();
-  const page = await context.newPage();
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  try {
-    await page.goto("/");
-    await page.locator('#navigation [data-page="devices"]').click();
-    await expect(page.locator('[data-form="appliance-save"]')).toBeVisible();
-    await expect.poll(async () => page.evaluate(async () => {
-      const { auth } = await import("/src/lib/firebase.ts");
-      await auth?.authStateReady();
-      return auth?.currentUser?.isAnonymous ?? false;
-    })).toBe(true);
-    const guest = await page.evaluate(async () => {
-      const { auth } = await import("/src/lib/firebase.ts");
-      await auth?.authStateReady();
-      return { uid: auth?.currentUser?.uid ?? null, anonymous: auth?.currentUser?.isAnonymous ?? false };
-    });
-    expect(guest.uid).toBeTruthy();
-    expect(guest.anonymous).toBe(true);
-    const missingGuestProfile = await page.evaluate(async () => {
-      const store = await import("/src/lib/personal/store.ts");
-      return { profile: await store.loadUserProfile(), language: await store.loadPreferredLanguage() };
-    });
-    expect(missingGuestProfile).toEqual({
-      profile: {
-        displayName: null,
-        preferredLanguage: null,
-        dwellingType: null,
-        utilityRecordType: null,
-        baselineKwh: null,
-        baselinePeriodEnd: null,
-      },
-      language: null,
-    });
-
-    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const email = `smartwatts-emulator-${suffix}@example.invalid`;
-    const password = `Emulator-${crypto.randomUUID()}-9!`;
-    await page.locator('#navigation [data-page="account"]').click();
-    const createForm = page.locator('[data-form="account-create"]');
-    await createForm.locator('[name="displayName"]').fill("SmartWatts Emulator Tester");
-    await createForm.locator('[name="dwellingType"]').selectOption("homeowner");
-    await createForm.locator('[name="utilityRecordType"]').selectOption("meralco_bill");
-    await createForm.locator('[name="baselineKwh"]').fill("235.5");
-    await createForm.locator('[name="baselinePeriodEnd"]').fill("2026-10-31");
-    await createForm.locator('[name="email"]').fill(` ${email} `);
-    await createForm.locator('[name="password"]').fill(password);
-    await createForm.locator('button[type="submit"]').click();
-    await expect.poll(async () => page.evaluate(async () => {
-      const { auth } = await import("/src/lib/firebase.ts");
-      await auth?.authStateReady();
-      return !!auth?.currentUser && !auth.currentUser.isAnonymous;
-    }), { timeout: 20_000 }).toBe(true);
-    await page.locator('#navigation [data-page="account"]').click();
-    await expect(page.locator("#content")).toContainText("Signed in as", { timeout: 20_000 });
-    await expect(page.locator("#toast")).toContainText("Account created", { timeout: 20_000 });
-    const linked = await page.evaluate(async () => {
-      const { auth } = await import("/src/lib/firebase.ts");
-      await auth.authStateReady();
-      return { uid: auth?.currentUser?.uid ?? null, anonymous: auth?.currentUser?.isAnonymous ?? true, email: auth?.currentUser?.email ?? null };
-    });
-    expect(linked).toEqual({ uid: guest.uid, anonymous: false, email });
-
-    const profile = await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).loadUserProfile());
-    expect(profile).toMatchObject({
-      displayName: "SmartWatts Emulator Tester",
-      preferredLanguage: "en",
-      dwellingType: "homeowner",
-      utilityRecordType: "meralco_bill",
-      baselineKwh: 235.5,
-      baselinePeriodEnd: "2026-10-31",
-    });
-    await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).saveUserProfile({ preferredLanguage: "tl" }));
-    expect(await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).loadPreferredLanguage())).toBe("tl");
-    await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).ensureUserProfile({
-      displayName: "Should Not Replace Existing Name",
-      preferredLanguage: "ko",
-    }));
-    expect(await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).loadUserProfile())).toMatchObject({
-      displayName: "SmartWatts Emulator Tester",
-      preferredLanguage: "tl",
-      baselineKwh: 235.5,
-      baselinePeriodEnd: "2026-10-31",
-    });
-
-    await page.locator('#navigation [data-page="account"]').click();
-    await page.locator('#content [data-act="sign-out"]').click();
-    const signInForm = page.locator('[data-form="account-sign-in"]');
-    await expect(signInForm).toBeVisible();
-    await signInForm.locator('[name="email"]').fill(email);
-    await signInForm.locator('[name="password"]').fill(password);
-    await signInForm.locator('button[type="submit"]').click();
-    await expect(page.locator("#content")).toContainText("Signed in as", { timeout: 20_000 });
-    const returningAccount = await page.evaluate(async () => (await import("/src/lib/firebase.ts")).auth?.currentUser?.uid ?? null);
-    expect(returningAccount).toBe(linked.uid);
-    expect(await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).loadUserProfile())).toMatchObject({
-      displayName: "SmartWatts Emulator Tester",
-      preferredLanguage: "tl",
-    });
-
-    await page.locator('#navigation [data-page="devices"]').click();
-    const applianceForm = page.locator('[data-form="appliance-save"]');
-    await applianceForm.locator('[name="name"]').fill("Emulator Refrigerator");
-    await applianceForm.locator('[name="category"]').selectOption("refrigeration");
-    await applianceForm.locator('[name="watts"]').fill("0");
-    await applianceForm.locator('[name="testedKwhMonth"]').fill("26.10");
-    await applianceForm.locator('[name="quantity"]').fill("1");
-    await applianceForm.locator('[name="hoursPerDay"]').fill("24");
-    await applianceForm.locator('[name="daysPerWeek"]').fill("7");
-    await applianceForm.locator('[name="scheduleNote"]').fill("Manufacturer tested monthly energy label.");
-    await applianceForm.locator('button[type="submit"]').click();
-    await expect(page.locator('[data-slot="appliances"]')).toContainText("Emulator Refrigerator");
-    await expect(page.locator('[data-slot="appliances"]')).toContainText("26.1 kWh/mo");
-    await page.locator('#navigation [data-page="notifications"]').click();
-    await expect(page.locator("#content .alert").first()).toContainText("Emulator Refrigerator");
-    await page.locator('#navigation [data-page="devices"]').click();
-
-    let appliances = await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).listAppliances());
-    expect(appliances).toHaveLength(1);
-    const first = appliances[0];
-    expect(first).toMatchObject({ id: expect.any(String), name: "Emulator Refrigerator", watts: 0, testedKwhMonth: 26.1 });
-    await page.reload();
-    await page.locator('#navigation [data-page="devices"]').click();
-    await expect(page.locator('[data-slot="appliances"]')).toContainText("Emulator Refrigerator");
-    expect(await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).loadUserProfile())).toMatchObject({
-      displayName: "SmartWatts Emulator Tester",
-      preferredLanguage: "tl",
-    });
-
-    await page.evaluate(async (id) => {
-      const store = await import("/src/lib/personal/store.ts");
-      const records = await store.listAppliances();
-      await store.saveAppliance({ ...records.find((record) => record.id === id)!, id, scheduleNote: "Updated in emulator E2E." });
-    }, first.id);
-    appliances = await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).listAppliances());
-    expect(appliances[0].scheduleNote).toBe("Updated in emulator E2E.");
-
-    const secondContext = await browser.newContext();
-    const secondPage = await secondContext.newPage();
-    secondPage.on("pageerror", (error) => pageErrors.push(error.message));
-    try {
-      await secondPage.goto("/");
-      await secondPage.locator('#navigation [data-page="devices"]').click();
-      await expect.poll(async () => secondPage.evaluate(async () => {
-        const { auth } = await import("/src/lib/firebase.ts");
-        await auth?.authStateReady();
-        return auth?.currentUser?.isAnonymous ?? false;
-      })).toBe(true);
-      const secondGuest = await secondPage.evaluate(async () => {
-        const { auth } = await import("/src/lib/firebase.ts");
-        await auth?.authStateReady();
-      return auth?.currentUser?.uid ?? null;
-      });
-      await secondPage.locator('#navigation [data-page="account"]').click();
-      const secondForm = secondPage.locator('[data-form="account-create"]');
-      await secondForm.locator('[name="displayName"]').fill("Second Emulator Account");
-      await secondForm.locator('[name="dwellingType"]').selectOption("homeowner");
-      await secondForm.locator('[name="utilityRecordType"]').selectOption("meralco_bill");
-      await secondForm.locator('[name="baselineKwh"]').fill("210");
-      await secondForm.locator('[name="baselinePeriodEnd"]').fill("2026-10-31");
-      await secondForm.locator('[name="email"]').fill(email);
-      await secondForm.locator('[name="password"]').fill(password);
-      await secondForm.locator('button[type="submit"]').click();
-      await expect(secondPage.locator("#toast")).toContainText("already has an account", { timeout: 15_000 });
-      const actualDuplicateErrorCode = await secondPage.evaluate(async ({ email: duplicateEmail, password: duplicatePassword }) => {
-        const { createPermanentAccount } = await import("/src/lib/account.ts");
-        try {
-          await createPermanentAccount(duplicateEmail, duplicatePassword);
-          return "no-error";
-        } catch (error) {
-          return (error as { code?: string }).code ?? "unknown-error";
-        }
-      }, { email, password });
-      expect(actualDuplicateErrorCode).toBe("auth/email-already-in-use");
-      const afterCollision = await secondPage.evaluate(async () => {
-        const { auth } = await import("/src/lib/firebase.ts");
-        return { uid: auth?.currentUser?.uid ?? null, anonymous: auth?.currentUser?.isAnonymous ?? false };
-      });
-      expect(afterCollision).toEqual({ uid: secondGuest, anonymous: true });
-
-      const otherEmail = `smartwatts-emulator-other-${suffix}@example.invalid`;
-      await secondForm.locator('[name="email"]').fill(otherEmail);
-      await secondForm.locator('[name="password"]').fill(`Other-${crypto.randomUUID()}-9!`);
-      await secondForm.locator('button[type="submit"]').click();
-      await expect(secondPage.locator("#content")).toContainText("Signed in as", { timeout: 20_000 });
-      const otherUid = await secondPage.evaluate(async () => (await import("/src/lib/firebase.ts")).auth?.currentUser?.uid ?? null);
-      expect(otherUid).toBeTruthy();
-      expect(otherUid).not.toBe(linked.uid);
-      await secondPage.locator('#navigation [data-page="notifications"]').click();
-      await expect(secondPage.locator("#content")).not.toContainText("Emulator Refrigerator");
-
-      const otherToken = await secondPage.evaluate(async () => (await import("/src/lib/firebase.ts")).auth?.currentUser?.getIdToken() ?? null);
-      expect(otherToken).toBeTruthy();
-      const response = await fetch(`http://127.0.0.1:18080/v1/projects/demo-smartwatts/databases/(default)/documents/users/${linked.uid}/appliances/${first.id}`, {
-        headers: { Authorization: `Bearer ${otherToken!}` },
-      });
-      expect(response.status).toBe(403);
-      expect((await response.json()).error.status).toBe("PERMISSION_DENIED");
-    } finally {
-      await secondContext.close();
-    }
-
-    await page.locator('[data-act="appliance-delete"]').click();
-    await expect(page.locator('[data-slot="appliances"]')).not.toContainText("Emulator Refrigerator");
-    appliances = await page.evaluate(async () => (await import("/src/lib/personal/store.ts")).listAppliances());
-    expect(appliances).toHaveLength(0);
-    await page.reload();
-    const afterRefresh = await page.evaluate(async () => {
-      const { auth } = await import("/src/lib/firebase.ts");
-      await auth?.authStateReady();
-      return { uid: auth?.currentUser?.uid ?? null, permanent: !!auth?.currentUser && !auth.currentUser.isAnonymous };
-    });
-    expect(afterRefresh).toEqual({ uid: linked.uid, permanent: true });
-    expect(pageErrors).toEqual([]);
-  } finally {
-    await context.close();
-  }
+  await page.route("**/api/auth/status", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ verified: true }) }));
+  await page.goto("/login");
+  const popupPromise = page.waitForEvent("popup", { timeout: 10_000 });
+  await page.getByRole("button", { name: "Continue with Google" }).click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState("domcontentloaded");
+  await popup.getByText("Add new account", { exact: true }).click();
+  await popup.locator("#email-input").fill(`google-emulator-${Date.now()}@example.com`);
+  await expect(popup.locator("#sign-in")).toBeEnabled();
+  await popup.getByRole("button", { name: "Sign in with Google.com" }).click();
+  await Promise.race([
+    page.waitForURL(/\/dashboard$/, { timeout: 20_000 }).catch(() => undefined),
+    page.locator('[role="alert"]').waitFor({ state: "visible", timeout: 20_000 }).catch(() => undefined),
+  ]);
+  const googleAlerts = (await page.locator('[role="alert"]').allTextContents()).map((message) => message.trim()).filter(Boolean);
+  expect(page.url(), `Google sign-in stayed on the login page. UI messages: ${googleAlerts.join(" | ") || "none"}`).toMatch(/\/dashboard$/);
+  const provider = await page.evaluate(async () => {
+    const { auth } = await import("/src/lib/firebase.ts");
+    await auth?.authStateReady();
+    return auth?.currentUser?.providerData.map((item) => item.providerId) ?? [];
+  });
+  expect(provider).toContain("google.com");
+  await page.reload();
+  await expect(page.locator("#navigation")).toBeVisible();
+  await page.locator("#logoutButton").click();
+  await expect(page).toHaveURL(/\/$/);
+  expect(pageErrors).toEqual([]);
 });

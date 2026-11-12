@@ -1,5 +1,5 @@
 Options -MultiViews
-DirectoryIndex dist/index.html setup.html index.html
+DirectoryIndex index.html
 RewriteEngine On
 
 RewriteRule ^dist/ - [L]
@@ -7,9 +7,22 @@ RewriteRule ^api/ - [L]
 RewriteRule ^assets/(.+)$ dist/assets/$1 [L]
 RewriteRule ^(manifest\.webmanifest|sw\.js|workbox-.*\.js|registerSW\.js|pwa-icon\.svg)$ dist/$1 [L]
 
-RewriteCond %{REQUEST_FILENAME} ^(.+)/index\.html$
+# Old /landing/*.html URLs -> clean URLs (only for direct browser requests, not internal rewrites).
+RewriteCond %{ENV:REDIRECT_STATUS} ^$
+RewriteRule ^landing/?(index\.html)?$ / [R=301,L]
+RewriteCond %{ENV:REDIRECT_STATUS} ^$
+RewriteRule ^landing/(login|register|forgot-password|reset-password)\.html$ /$1 [R=301,L]
+RewriteRule ^landing/ - [L]
+
+# Public pages (clean URLs).
+RewriteRule ^(index\.html)?$ landing/index.html [L]
+RewriteRule ^(login|register|forgot-password|reset-password)/?$ landing/$1.html [L]
+
+# The dashboard lives at "/dashboard" (built app if present, otherwise the setup notice).
+RewriteRule ^dashboard/$ dashboard [R=301,L]
+RewriteCond %{REQUEST_FILENAME} ^(.+)/dashboard$
 RewriteCond %1/dist/index.html -f
-RewriteRule ^index\.html$ dist/index.html [L]
-RewriteCond %{REQUEST_FILENAME} ^(.+)/index\.html$
+RewriteRule ^dashboard$ dist/index.html [L]
+RewriteCond %{REQUEST_FILENAME} ^(.+)/dashboard$
 RewriteCond %1/dist/index.html !-f
-RewriteRule ^index\.html$ setup.html [L]
+RewriteRule ^dashboard$ setup.html [L]
