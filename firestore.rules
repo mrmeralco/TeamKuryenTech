@@ -1,0 +1,39 @@
+rules_version = '2';
+// SmartWatts: every household (anonymous or linked account) can only read/write its own data.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner(uid) { return request.auth != null && request.auth.uid == uid; }
+    function validId(id) { return request.resource.data.id == id; }
+    function num(v, lo, hi) { return (v is int || v is float) && v >= lo && v <= hi; }
+
+    match /users/{uid}/bills/{id} {
+      allow read, delete: if isOwner(uid);
+      allow create, update: if isOwner(uid) && validId(id)
+        && num(request.resource.data.kwh, 0, 100000)
+        && num(request.resource.data.amountPhp, 0, 10000000)
+        && request.resource.data.periodStart is string
+        && request.resource.data.periodEnd is string;
+    }
+    match /users/{uid}/appliances/{id} {
+      allow read, delete: if isOwner(uid);
+      allow create, update: if isOwner(uid) && validId(id)
+        && num(request.resource.data.wattage, 0.01, 10000)
+        && num(request.resource.data.quantity, 1, 100)
+        && num(request.resource.data.hoursPerDay, 0, 24)
+        && num(request.resource.data.daysPerPeriod, 1, 45)
+        && request.resource.data.name is string && request.resource.data.name.size() <= 60;
+    }
+    match /users/{uid}/plans/{id} {
+      allow read, delete: if isOwner(uid);
+      allow create, update: if isOwner(uid) && validId(id) && request.resource.data.applianceId is string;
+    }
+    match /users/{uid}/profile/{id} {
+      allow read, delete: if isOwner(uid);
+      allow create, update: if isOwner(uid) && id == 'household' && validId(id)
+        && request.resource.data.language in ['en', 'fil'];
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
