@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Maskable variant: full-bleed background, logo mark kept inside the 80% safe zone. -->
+  <defs><clipPath id="c"><circle cx="544" cy="510" r="397"/></clipPath></defs>
+  <rect width="512" height="512" fill="#fffaf2"/>
+  <svg x="96" y="96" width="320" height="320" viewBox="104 76 868 868">
+    <circle cx="538" cy="510" r="422" fill="#000"/>
+    <circle cx="544" cy="510" r="397" fill="#FF7B00"/>
+    <circle cx="610" cy="510" r="333" fill="#F5AD3C" clip-path="url(#c)"/>
+    <polygon points="192,661 472,512 394,393 755,233 905,451 651,518 738,651" fill="#F7F7F7"/>
+  </svg>
+</svg>

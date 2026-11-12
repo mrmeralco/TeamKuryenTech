@@ -14,3 +14,4 @@ firebase-adminsdk-*.json
 *-debug.log
 .firebase/
 backend/data/
+dev-dist/
