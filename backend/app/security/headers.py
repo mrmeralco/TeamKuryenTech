@@ -54,6 +54,8 @@ SECURITY_HEADERS: dict[str, str] = {
     "Cross-Origin-Resource-Policy": "same-site",
     "X-Permitted-Cross-Domain-Policies": "none",
     "X-DNS-Prefetch-Control": "off",
+    # Opt out of AI training on pages and images (search indexing is unaffected).
+    "X-Robots-Tag": "noai, noimageai",
 }
 
 # Headers that reveal the server or framework; stripped from every response.
