@@ -15,10 +15,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from urllib.parse import parse_qs
 
 from . import filters, limits, rules, site
 from .headers import REMOVED_HEADERS, SECURITY_HEADERS, security_header_items
 from .settings import SecuritySettings
+from .shield import CLIENT_JS, COOKIE, Shield
 from .store import BAN_SECONDS, store_from_settings
 
 logger = logging.getLogger("smartwatts.security")
@@ -63,11 +65,44 @@ class SecurityMiddleware:
         self.app = app
         self.settings = settings
         self.store = store or store_from_settings(settings)
+        self.shield = Shield(settings.bot_secret, settings.attack_mode_forced)
         self._header_items = security_header_items()
 
-    # Per-IP limits; attack mode (shield.py) scales them down.
+    # Per-IP limits; attack mode (shield.py) scales them down to a quarter.
     def scaled(self, limit: int) -> int:
-        return limit
+        return self.shield.scaled(limit)
+
+    async def _shield(self, scope, headers, send) -> bool:
+        """Step 13. Serves /__c.js, /__t, /__v and gates pages / API on the signed cookie. True = answered."""
+        path, ua = scope["path"], headers.get("user-agent", "")
+        if path == "/__c.js":
+            await raw_response(send, 200, CLIENT_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
+            return True
+        if path == "/__t":  # a fresh puzzle for the in-app re-check (public/shield-client.js)
+            await raw_response(send, 200, self.shield.token_json(), "application/json", {"Cache-Control": "no-store"})
+            return True
+        if path == "/__v":
+            query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            if not self.shield.pow_ok(query.get("t", [""])[0], query.get("n", [""])[0]):
+                await raw_response(send, 403, b"Bad answer", "text/plain", {"Cache-Control": "no-store"})
+                return True
+            value, ttl = self.shield.cookie_value(ua)
+            https = self.settings.production or scope.get("scheme") == "https" \
+                or headers.get("x-forwarded-proto", "").startswith("https")
+            cookie = f"{COOKIE}={value}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax" + ("; Secure" if https else "")
+            await raw_response(send, 204, b"", "text/plain", {"Set-Cookie": cookie, "Cache-Control": "no-store"})
+            return True
+        if self.shield.verified(headers.get("cookie", ""), ua):
+            return False
+        if path.startswith("/api/"):
+            if "x-api-key" in headers and path.startswith("/api/notifications/"):
+                return False  # scheduler jobs: the route checks the key
+            raise Blocked(403, "Verification required")
+        if site.is_document(path) and not filters.is_search_bot(ua):
+            await raw_response(send, 403, self.shield.challenge_page(), "text/html; charset=utf-8",
+                               {"Cache-Control": "no-store"})
+            return True
+        return False
 
     def _request_rule_violation(self, scope, headers) -> tuple[int, str, dict[str, str]] | None:
         method = scope["method"]
@@ -175,8 +210,11 @@ class SecurityMiddleware:
                 if limits.TRAP.search(scope["path"]):
                     raise Blocked(404, "Not Found", strike="honeypot")
                 self._filter(scope, headers)
+                self.shield.note_request()
                 if self.settings.rate_limits:
                     receive = await self._rate_limits(scope, headers, ip, receive)
+                if self.settings.shield and await self._shield(scope, headers, send_with_headers):
+                    return
                 await self.app(scope, receive, send_with_headers)
             except Blocked as blocked:
                 reason = blocked.strike or ("banned" if blocked.status == 403 else blocked.detail)
@@ -208,6 +246,13 @@ class SecurityMiddleware:
         banned = await self.store.strike(ip)
         logger.warning("security strike reason=%s ip=%s %s %s%s", reason, ip, scope.get("method"),
                        scope.get("path", "")[:200], " -> banned 15 min" if banned else "")
+
+
+async def raw_response(send, status: int, body: bytes, content_type: str, headers: dict[str, str]) -> None:
+    items = [(b"content-type", content_type.encode()), (b"content-length", str(len(body)).encode())]
+    items += [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in headers.items()]
+    await send({"type": "http.response.start", "status": status, "headers": items})
+    await send({"type": "http.response.body", "body": body})
 
 
 async def json_response(send, status: int, body: dict, headers: dict[str, str] | None = None) -> None:

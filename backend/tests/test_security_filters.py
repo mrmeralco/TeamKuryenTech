@@ -56,8 +56,9 @@ def test_three_filtered_requests_ban_the_ip():
 
 def test_script_user_agents_refused_but_browsers_and_search_engines_pass():
     client, _ = make()
-    assert client.get("/api/ok").status_code == 200
-    assert client.get("/api/ok", headers={"User-Agent": "python-requests/2.32"}).status_code == 403
+    # a browser passes the user-agent rules and only meets the step-13 cookie check
+    assert client.get("/api/ok").json() == {"detail": "Verification required"}
+    assert client.get("/api/ok", headers={"User-Agent": "python-requests/2.32"}).json() == {"detail": "Forbidden"}
     assert client.get("/login", headers={"User-Agent": "Mozilla/5.0 (compatible; GPTBot/1.2)"}).status_code == 403
     assert client.get("/login", headers={"User-Agent": "Mozilla/5.0 HeadlessChrome/130"}).status_code == 403
     google = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
