@@ -13,7 +13,7 @@ const LANGUAGES = [
 ];
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   // Register one appliance in English so a numeric value can be checked in every language.
