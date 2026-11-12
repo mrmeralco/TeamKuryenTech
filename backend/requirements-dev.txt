@@ -1,0 +1,3 @@
+-r requirements.txt
+# Test-only tools (not installed in production).
+pytest>=9.0.3,<10
