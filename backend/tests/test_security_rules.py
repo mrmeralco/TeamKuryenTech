@@ -121,7 +121,7 @@ def test_site_never_serves_outside_the_folder(tmp_path, monkeypatch):
     for path in ("/../.env", "/..%2f.env", "/%2e%2e/.env", "/assets/../../.env", "/..\\.env",
                  "/../dist-secret/key.txt", "/missing.js"):
         response = client.get(path)
-        assert response.status_code == 404, path
+        assert response.status_code in (403, 404), path  # 403 when the step-12 filters catch the probe first
         assert "secret" not in response.text and "leak" not in response.text
     # prefix trick: "dist-secret" starts with "dist" but is not inside it
     assert site.contained(web, "../dist-secret/key.txt") is None

@@ -25,7 +25,8 @@ def test_bad_path_parameters_are_400(path):
     "from=2026-13", "from=1%27%20OR%201=1", "limit=abc", "cursor=-1", "unknown=1", "limit=5&limit=6",
 ])
 def test_bad_query_parameters_are_400(query):
-    assert client.get(f"/api/rentals/properties/p1/analytics?{query}").status_code == 400
+    # 403 when the step-12 injection filter refuses the request before validation runs
+    assert client.get(f"/api/rentals/properties/p1/analytics?{query}").status_code in (400, 403)
 
 
 def test_every_route_parameter_has_a_rule():

@@ -16,7 +16,7 @@ import hashlib
 import json
 import logging
 
-from . import limits, rules, site
+from . import filters, limits, rules, site
 from .headers import REMOVED_HEADERS, SECURITY_HEADERS, security_header_items
 from .settings import SecuritySettings
 from .store import BAN_SECONDS, store_from_settings
@@ -85,6 +85,20 @@ class SecurityMiddleware:
         if declared is not None and (not declared.isdigit() or int(declared) > rules.body_limit(scope["path"])):
             return 413, "Request body too large", {}
         return None
+
+    def _filter(self, scope, headers) -> None:
+        """Step 12 request filters (filters.py). Blocked requests are strikes."""
+        path = scope["path"]
+        why = filters.attack_reason(path, scope.get("query_string", b"").decode("latin-1"), headers)
+        if why:
+            raise Blocked(403, "Forbidden", strike=why)
+        if not self.settings.shield:
+            return  # user-agent rules belong to the bot protection, on in production
+        if "x-api-key" in headers and path.startswith("/api/notifications/"):
+            return  # scheduler jobs (curl etc.) prove themselves with the key, checked by the route
+        why = filters.ua_reason(headers.get("user-agent", ""), page=not path.startswith("/api/"))
+        if why:
+            raise Blocked(403, "Forbidden", strike=why)
 
     async def _limit(self, key: str, window: int, limit: int, detail: str = "Too many requests") -> None:
         count, reset = await self.store.hit(key, window)
@@ -160,6 +174,7 @@ class SecurityMiddleware:
                     raise Blocked(403, "Forbidden", {"Retry-After": str(BAN_SECONDS)}, strike="")
                 if limits.TRAP.search(scope["path"]):
                     raise Blocked(404, "Not Found", strike="honeypot")
+                self._filter(scope, headers)
                 if self.settings.rate_limits:
                     receive = await self._rate_limits(scope, headers, ip, receive)
                 await self.app(scope, receive, send_with_headers)

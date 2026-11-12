@@ -4,7 +4,7 @@
     "web": {
       "root": ".",
       "framework": "vite",
-      "buildCommand": "npm run build && node scripts/prepare-hosting.mjs",
+      "buildCommand": "npm run build:prod",
       "outputDirectory": "dist"
     },
     "app": {
