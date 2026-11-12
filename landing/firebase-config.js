@@ -1,14 +1,17 @@
 // Public Firebase web config (identifies the project; not a secret).
 // Emulator config is selected only by Vite's explicit local test flag.
-const useEmulators = import.meta.env.VITE_USE_FIREBASE_EMULATORS === "true";
-const emulatorHost = import.meta.env.VITE_FIREBASE_EMULATOR_HOST || "127.0.0.1";
-const authEmulatorPort = import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT || "9099";
+// Landing pages are also served raw (Apache/static hosting) where `import.meta.env` does not exist:
+// read it defensively so those pages fall back to the production config instead of crashing.
+const env = import.meta.env ?? {};
+const useEmulators = env.VITE_USE_FIREBASE_EMULATORS === "true";
+const emulatorHost = env.VITE_FIREBASE_EMULATOR_HOST || "127.0.0.1";
+const authEmulatorPort = env.VITE_FIREBASE_AUTH_EMULATOR_PORT || "9099";
 
 export const firebaseConfig = useEmulators
   ? {
       apiKey: "demo-api-key",
       authDomain: "demo-smartwatts.firebaseapp.com",
-      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "demo-smartwatts",
+      projectId: env.VITE_FIREBASE_PROJECT_ID || "demo-smartwatts",
       appId: "demo-app",
     }
   : {

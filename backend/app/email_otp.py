@@ -137,7 +137,13 @@ MAILER_SCRIPT = Path(__file__).resolve().parents[2] / "mailer" / "send.mjs"
 
 
 def send_email(template: str, to: str, data: dict) -> None:
-    """Sends a SmartWatts email through the nodemailer script (Gmail app password from .env)."""
+    """Sends a SmartWatts email through the nodemailer script (Gmail app password from .env).
+
+    ``EMAIL_DELIVERY=disabled`` (used by the emulator demo environment) blocks every delivery before
+    the mailer process starts, so synthetic bills and statements can never email real recipients.
+    """
+    if os.getenv("EMAIL_DELIVERY", "").strip().lower() == "disabled":
+        raise HTTPException(status_code=503, detail="Email delivery is disabled in this environment.")
     node = shutil.which("node")
     if not node or not MAILER_SCRIPT.exists():
         raise HTTPException(status_code=503, detail="Email sending is not set up on the server (Node mailer missing).")

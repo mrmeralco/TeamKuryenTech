@@ -18,6 +18,16 @@ RewriteRule ^landing/ - [L]
 RewriteRule ^(index\.html)?$ landing/index.html [L]
 RewriteRule ^(login|register|forgot-password|reset-password)/?$ landing/$1.html [L]
 
+# NFC card / QR entry page ("/nfc"): built page if present, otherwise the setup notice.
+RewriteRule ^branding/(.+)$ dist/branding/$1 [L]
+RewriteRule ^nfc/$ nfc [R=301,L]
+RewriteCond %{REQUEST_FILENAME} ^(.+)/nfc$
+RewriteCond %1/dist/nfc.html -f
+RewriteRule ^nfc$ dist/nfc.html [L]
+RewriteCond %{REQUEST_FILENAME} ^(.+)/nfc$
+RewriteCond %1/dist/nfc.html !-f
+RewriteRule ^nfc$ setup.html [L]
+
 # The dashboard lives at "/dashboard" (built app if present, otherwise the setup notice).
 RewriteRule ^dashboard/$ dashboard [R=301,L]
 RewriteCond %{REQUEST_FILENAME} ^(.+)/dashboard$

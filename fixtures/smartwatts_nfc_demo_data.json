@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "1.0",
+  "purpose": "SmartWatts NFC Owner/Tenant demonstration fixture; NOT real electricity usage or billing evidence",
+  "environmentPolicy": {
+    "default": "firebase-emulator-only",
+    "productionWritesAllowed": false,
+    "requireExplicitApprovalForSharedDemoEnvironment": true,
+    "idempotentSeedRequired": true,
+    "doNotInferActualUidsFromEmail": true,
+    "replaceExistingRecords": false
+  },
+  "demoLabel": "SAMPLE DATA — FOR DEMONSTRATION ONLY",
+  "identities": {
+    "platformStaff": { "email": "schoolproware@gmail.com", "role": "platformAdmin", "seedStaffClaims": false },
+    "owner": { "email": "rolexesto0001@gmail.com", "role": "propertyOwner", "uid": null },
+    "tenant": { "email": "rolexesto001@gmail.com", "role": "tenant", "uid": null }
+  },
+  "property": {
+    "fixtureId": "demo-property-smartwatts-01",
+    "name": "SmartWatts Demo Residences",
+    "address": "Sample address — Quezon City, Metro Manila (fictional)",
+    "timezone": "Asia/Manila",
+    "currency": "PHP",
+    "unitLimit": 10,
+    "subscription": {
+      "mode": "fixture-only",
+      "state": "active",
+      "note": "Do not seed real entitlements or bypass backend authorization. Emulator fixture may model an approved admin grant."
+    },
+    "meteringModel": "individually-metered",
+    "units": [
+      { "fixtureId": "unit-101", "label": "Unit 101", "occupancy": "occupied", "tenantEmail": "rolexesto001@gmail.com", "meterFixtureId": "meter-101", "occupancyStart": "2026-08-01" },
+      { "fixtureId": "unit-102", "label": "Unit 102", "occupancy": "vacant", "tenantEmail": null, "meterFixtureId": "meter-102", "occupancyStart": null }
+    ],
+    "meters": [
+      { "fixtureId": "meter-101", "unitFixtureId": "unit-101", "kind": "individual", "unit": "kWh" },
+      { "fixtureId": "meter-102", "unitFixtureId": "unit-102", "kind": "individual", "unit": "kWh" }
+    ],
+    "meterReadings": [
+      { "meterFixtureId": "meter-101", "date": "2026-08-01", "readingKwh": 1200 },
+      { "meterFixtureId": "meter-101", "date": "2026-09-01", "readingKwh": 1348 },
+      { "meterFixtureId": "meter-101", "date": "2026-10-01", "readingKwh": 1508 },
+      { "meterFixtureId": "meter-101", "date": "2026-11-01", "readingKwh": 1680 },
+      { "meterFixtureId": "meter-102", "date": "2026-08-01", "readingKwh": 500 },
+      { "meterFixtureId": "meter-102", "date": "2026-09-01", "readingKwh": 555 },
+      { "meterFixtureId": "meter-102", "date": "2026-10-01", "readingKwh": 613 },
+      { "meterFixtureId": "meter-102", "date": "2026-11-01", "readingKwh": 665 }
+    ],
+    "utilityBills": [
+      { "fixtureId": "bill-2026-08", "periodStart": "2026-08-01", "periodEnd": "2026-08-31", "billedKwh": 203, "amountDuePhp": 2233, "dueDate": "2026-09-15", "paymentStatus": "unknown", "source": "demo-synthetic", "status": "recorded" },
+      { "fixtureId": "bill-2026-09", "periodStart": "2026-09-01", "periodEnd": "2026-09-30", "billedKwh": 218, "amountDuePhp": 2398, "dueDate": "2026-10-15", "paymentStatus": "unknown", "source": "demo-synthetic", "status": "recorded" },
+      { "fixtureId": "bill-2026-10", "periodStart": "2026-10-01", "periodEnd": "2026-10-31", "billedKwh": 224, "amountDuePhp": 2464, "dueDate": "2026-11-15", "paymentStatus": "unknown", "source": "demo-synthetic", "status": "recorded" }
+    ],
+    "tenantStatements": [
+      { "fixtureId": "statement-101-2026-08", "unitFixtureId": "unit-101", "period": "2026-08", "meteredKwh": 148, "illustrativeRatePhpPerKwh": 11, "calculatedAmountPhp": 1628, "status": "published-demo", "notificationEnabled": false },
+      { "fixtureId": "statement-101-2026-09", "unitFixtureId": "unit-101", "period": "2026-09", "meteredKwh": 160, "illustrativeRatePhpPerKwh": 11, "calculatedAmountPhp": 1760, "status": "published-demo", "notificationEnabled": false },
+      { "fixtureId": "statement-101-2026-10", "unitFixtureId": "unit-101", "period": "2026-10", "meteredKwh": 172, "illustrativeRatePhpPerKwh": 11, "calculatedAmountPhp": 1892, "status": "published-demo", "notificationEnabled": false }
+    ],
+    "demoNotes": [
+      "All data are synthetic fixtures for screenshots, navigation and QA.",
+      "Aggregate bill kWh matches interval meter changes for both individually metered units (Aug: 148+55, Sep: 160+58, Oct: 172+52).",
+      "The 11 PHP/kWh figure is illustrative and is not a verified tariff or Meralco rate.",
+      "Do not treat recorded bill amounts as paid; no payment confirmation exists.",
+      "Publish demo statements only inside emulator/isolated demo records with mail delivery disabled.",
+      "Map emails to verified Firebase Auth UIDs and accepted tenant membership through existing application workflows."
+    ]
+  }
+}

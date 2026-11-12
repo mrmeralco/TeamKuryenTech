@@ -96,7 +96,7 @@ export default defineConfig({
         ],
       },
       workbox: {
-        navigateFallbackDenylist: [/^\/api\//, /^\/landing\//, /^\/$/, /^\/(login|register|forgot-password|reset-password)\/?$/],
+        navigateFallbackDenylist: [/^\/api\//, /^\/nfc(\/|\.html)?$/, /^\/landing\//, /^\/$/, /^\/(login|register|forgot-password|reset-password)\/?$/],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\/.*/i,
@@ -124,6 +124,8 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
+      // The dashboard plus the NFC/QR entry page served at /nfc.
+      input: { main: "index.html", nfc: "nfc.html" },
       output: {
         manualChunks(id) {
           if (id.includes("node_modules/tesseract.js")) return "ocr";
