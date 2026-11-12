@@ -1,0 +1,15 @@
+Options -MultiViews
+DirectoryIndex dist/index.html setup.html index.html
+RewriteEngine On
+
+RewriteRule ^dist/ - [L]
+RewriteRule ^api/ - [L]
+RewriteRule ^assets/(.+)$ dist/assets/$1 [L]
+RewriteRule ^(manifest\.webmanifest|sw\.js|workbox-.*\.js|registerSW\.js|pwa-icon\.svg)$ dist/$1 [L]
+
+RewriteCond %{REQUEST_FILENAME} ^(.+)/index\.html$
+RewriteCond %1/dist/index.html -f
+RewriteRule ^index\.html$ dist/index.html [L]
+RewriteCond %{REQUEST_FILENAME} ^(.+)/index\.html$
+RewriteCond %1/dist/index.html !-f
+RewriteRule ^index\.html$ setup.html [L]

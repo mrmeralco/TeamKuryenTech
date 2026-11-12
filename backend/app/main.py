@@ -1,190 +1,241 @@
-"""SmartWatts API.
+import os
+from typing import Annotated, Literal
 
-Endpoints
-  GET  /api/health          -> service + capability status (never returns secrets)
-  POST /api/ocr/bill        -> multipart image -> suggested bill fields (user must confirm)
-  POST /api/ocr/label       -> multipart image -> suggested wattage (user must confirm)
-  POST /api/advisor/chat    -> grounded Energy Advisor answer, 503 when AI is unavailable
-  POST /api/calc/compare    -> deterministic calculator (same spec as the frontend)
-
-Error responses use {"detail": {"code": str, "message": str}}.
-"""
-
-from __future__ import annotations
-
-import logging
-import shutil
-import threading
-import time
-from collections import defaultdict, deque
-from typing import Callable
-
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.exceptions import RequestValidationError
+import firebase_admin
+import httpx
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from firebase_admin import auth as firebase_auth
+from firebase_admin.exceptions import FirebaseError
+from google.auth.exceptions import DefaultCredentialsError
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from . import advisor, energy, ocr
-from .config import Settings, get_settings
+load_dotenv()
 
-log = logging.getLogger("smartwatts")
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-
-
-def error(status: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
-
-
-class RateLimiter:
-    """Small in-memory sliding-window limiter, per client IP and bucket."""
-
-    def __init__(self) -> None:
-        self._hits: dict[tuple[str, str], deque[float]] = defaultdict(deque)
-        self._lock = threading.Lock()
-
-    def check(self, key: tuple[str, str], limit: int, window: float = 60.0) -> bool:
-        now = time.monotonic()
-        with self._lock:
-            q = self._hits[key]
-            while q and now - q[0] > window:
-                q.popleft()
-            if len(q) >= limit:
-                return False
-            q.append(now)
-            return True
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GOOGLE_TRANSLATE_URL = "https://translation.googleapis.com/language/translate/v2"
+MAX_MESSAGES = 12
+MAX_TRANSLATION_STRINGS = 80
+MAX_TRANSLATION_CHARACTERS = 25000
+LanguageCode = Annotated[str, Field(pattern=r"^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$")]
 
 
-class UsageIn(BaseModel):
-    wattage: float
-    hoursPerDay: float
-    days: float
-    quantity: float
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    role: Literal["user", "assistant"]
+    text: str = Field(min_length=1, max_length=2000)
 
 
-class CompareIn(BaseModel):
-    baseline: UsageIn
-    scenario: UsageIn
-    rate: float | None = Field(default=None)
+class ChatRequest(BaseModel):
+    language: LanguageCode
+    messages: list[ChatMessage] = Field(min_length=1, max_length=MAX_MESSAGES)
+
+    @model_validator(mode="after")
+    def require_latest_user_message(self):
+        if self.messages[-1].role != "user":
+            raise ValueError("The latest chat message must be from the user.")
+        return self
 
 
-def create_app(settings: Settings | None = None, genai_client_factory: Callable[[str], object] | None = None) -> FastAPI:
-    settings = settings or get_settings()
-    app = FastAPI(title="SmartWatts API", version="1.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
-    limiter = RateLimiter()
+class ChatReply(BaseModel):
+    reply: str
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
-        allow_credentials=False,
+
+class TranslationRequest(BaseModel):
+    target: LanguageCode
+    texts: list[str] = Field(min_length=1, max_length=MAX_TRANSLATION_STRINGS)
+
+    @model_validator(mode="after")
+    def validate_texts(self):
+        if any(not text.strip() or len(text) > 5000 for text in self.texts):
+            raise ValueError("Translation text must contain 1 to 5,000 characters.")
+        if sum(map(len, self.texts)) > MAX_TRANSLATION_CHARACTERS:
+            raise ValueError("A translation request may contain at most 25,000 characters.")
+        return self
+
+
+class TranslationResponse(BaseModel):
+    translations: list[str]
+
+
+app = FastAPI(title="SmartWatts API", version="2.0.0")
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
+)
+
+def require_guest(authorization: Annotated[str | None, Header()] = None) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="A Firebase guest sign-in is required.")
+
+    project_id = os.getenv("FIREBASE_PROJECT_ID", "").strip()
+    if not project_id:
+        raise HTTPException(status_code=503, detail="Firebase authentication is not configured on the server.")
+
+    try:
+        try:
+            firebase_app = firebase_admin.get_app()
+        except ValueError:
+            firebase_app = firebase_admin.initialize_app(options={"projectId": project_id})
+        claims = firebase_auth.verify_id_token(authorization.removeprefix("Bearer ").strip(), app=firebase_app)
+    except (firebase_auth.InvalidIdTokenError, firebase_auth.ExpiredIdTokenError):
+        raise HTTPException(status_code=401, detail="The Firebase sign-in token is invalid or expired.")
+    except (DefaultCredentialsError, FirebaseError) as error:
+        raise HTTPException(status_code=503, detail="Firebase token verification is unavailable.") from error
+
+    if claims.get("firebase", {}).get("sign_in_provider") != "anonymous":
+        raise HTTPException(status_code=403, detail="An anonymous Firebase account is required.")
+    return claims["uid"]
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
+async def google_translation_request(method: str, *, params: dict[str, str], payload: dict | None = None):
+    api_key = os.getenv("GOOGLE_TRANSLATE_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Google Cloud Translation is not configured on the server.")
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+            response = await client.request(
+                method,
+                GOOGLE_TRANSLATE_URL,
+                params={**params, "key": api_key},
+                json=payload,
+            )
+    except httpx.TimeoutException as error:
+        raise HTTPException(status_code=504, detail="Google Cloud Translation timed out. Please try again.") from error
+    except httpx.RequestError as error:
+        raise HTTPException(status_code=502, detail="Could not reach Google Cloud Translation.") from error
+
+    if response.status_code in (401, 403):
+        raise HTTPException(status_code=503, detail="Google Cloud Translation is unavailable for this server configuration.")
+    if response.status_code == 400:
+        raise HTTPException(status_code=400, detail="Google Cloud Translation rejected the language or text.")
+    if response.is_error:
+        raise HTTPException(status_code=502, detail="Google Cloud Translation returned an error.")
+
+    try:
+        result = response.json()
+    except ValueError as error:
+        raise HTTPException(status_code=502, detail="Google Cloud Translation returned an invalid response.") from error
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="Google Cloud Translation returned an invalid response.")
+    return result
+
+
+@app.get("/api/translate/languages")
+async def translation_languages(_guest_uid: str = Depends(require_guest)):
+    result = await google_translation_request("GET", params={"target": "en"})
+    data = result.get("data")
+    languages = data.get("languages") if isinstance(data, dict) else None
+    if not isinstance(languages, list):
+        raise HTTPException(status_code=502, detail="Google Cloud Translation returned an invalid language list.")
+
+    supported = [
+        {"code": language["language"], "name": language["name"]}
+        for language in languages
+        if isinstance(language, dict)
+        and isinstance(language.get("language"), str)
+        and isinstance(language.get("name"), str)
+    ]
+    if not supported:
+        raise HTTPException(status_code=502, detail="Google Cloud Translation returned an empty language list.")
+    return {"languages": supported}
+
+
+@app.post("/api/translate", response_model=TranslationResponse)
+async def translate(request: TranslationRequest, _guest_uid: str = Depends(require_guest)):
+    result = await google_translation_request(
+        "POST",
+        params={},
+        payload={"q": request.texts, "target": request.target, "format": "text"},
     )
+    data = result.get("data")
+    translated = data.get("translations") if isinstance(data, dict) else None
+    if not isinstance(translated, list) or len(translated) != len(request.texts):
+        raise HTTPException(status_code=502, detail="Google Cloud Translation returned an incomplete translation.")
 
-    @app.exception_handler(RequestValidationError)
-    async def _validation(_: Request, exc: RequestValidationError):
-        fields = [".".join(str(p) for p in e["loc"][1:]) for e in exc.errors()][:10]
-        return JSONResponse(
-            status_code=422,
-            content={"detail": {"code": "invalid_request", "message": "Some values are missing or invalid.", "fields": fields}},
-        )
+    translations = [item.get("translatedText") for item in translated if isinstance(item, dict)]
+    if len(translations) != len(request.texts) or not all(isinstance(text, str) for text in translations):
+        raise HTTPException(status_code=502, detail="Google Cloud Translation returned an invalid translation.")
+    return TranslationResponse(translations=translations)
 
-    def limit(bucket: str, per_minute: int):
-        def dep(request: Request) -> None:
-            ip = request.client.host if request.client else "unknown"
-            if not limiter.check((bucket, ip), per_minute):
-                raise error(429, "rate_limited", "Too many requests. Please wait a minute and try again.")
 
-        return dep
+@app.post("/api/chat", response_model=ChatReply)
+async def chat(request: ChatRequest, _guest_uid: str = Depends(require_guest)):
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="The AI service is not configured on the server.")
 
-    def make_client():
-        if not settings.gemini_api_key:
-            return None
-        if genai_client_factory:
-            return genai_client_factory(settings.gemini_api_key)
-        from google import genai
-
-        return genai.Client(api_key=settings.gemini_api_key)
-
-    async def read_upload(file: UploadFile) -> bytes:
-        if file.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-            raise error(415, "unsupported_type", "Please upload a JPEG, PNG or WebP photo.")
-        data = await file.read(settings.max_upload_bytes + 1)
-        await file.close()
-        return data
-
-    @app.get("/api/health")
-    def health():
-        return {
-            "status": "ok",
-            "ocrAvailable": shutil.which("tesseract") is not None,
-            "aiAvailable": bool(settings.gemini_api_key),
+    contents = [
+        {
+            "role": "model" if message.role == "assistant" else "user",
+            "parts": [{"text": message.text}],
         }
+        for message in request.messages
+    ]
+    payload = {
+        "systemInstruction": {
+            "parts": [{
+                "text": (
+                    "You are the SmartWatts energy-saving assistant. Be helpful, concise, and practical. "
+                    f"Reply only in the language identified by language code '{request.language}'. "
+                    "Do not claim access to the user's account "
+                    "or live electricity data."
+                )
+            }]
+        },
+        "contents": contents,
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 700},
+    }
 
-    @app.post("/api/ocr/bill", dependencies=[Depends(limit("ocr", settings.ocr_rate_per_minute))])
-    async def ocr_bill(file: UploadFile = File(...)):
-        data = await read_upload(file)
-        try:
-            img = ocr.load_image(data, settings.max_upload_bytes)
-            read = ocr.read_text(img)
-        except ocr.ImageRejected as exc:
-            raise error(422, "bad_image", str(exc))
-        except ocr.OcrUnavailable as exc:
-            raise error(503, "ocr_unavailable", str(exc))
-        finally:
-            del data  # drop the photo bytes as soon as possible
-        fields = ocr.parse_bill_text(read.text)
-        low = read.confidence is None or read.confidence < ocr.LOW_CONFIDENCE
-        if low:
-            fields.warnings.append("The photo was hard to read. Check every value carefully.")
-        log.info("ocr_bill parsed fields=%s", [k for k in ("periodStart", "kwh", "totalAmountPhp") if getattr(fields, k) is not None])
-        return {
-            "fields": {k: getattr(fields, k) for k in ("periodStart", "periodEnd", "kwh", "totalAmountPhp", "charges")},
-            "fieldStatus": ocr.field_status(fields),
-            "confidence": read.confidence,
-            "lowConfidence": low,
-            "warnings": fields.warnings,
-        }
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
+            response = await client.post(
+                GEMINI_API_URL.format(model=model),
+                headers={"x-goog-api-key": api_key},
+                json=payload,
+            )
+    except httpx.TimeoutException as error:
+        raise HTTPException(status_code=504, detail="The AI service timed out. Please try again.") from error
+    except httpx.RequestError as error:
+        raise HTTPException(status_code=502, detail="Could not reach the AI service. Please try again.") from error
 
-    @app.post("/api/ocr/label", dependencies=[Depends(limit("ocr", settings.ocr_rate_per_minute))])
-    async def ocr_label(file: UploadFile = File(...)):
-        data = await read_upload(file)
-        try:
-            img = ocr.load_image(data, settings.max_upload_bytes)
-            read = ocr.read_text(img)
-        except ocr.ImageRejected as exc:
-            raise error(422, "bad_image", str(exc))
-        except ocr.OcrUnavailable as exc:
-            raise error(503, "ocr_unavailable", str(exc))
-        finally:
-            del data
-        result = ocr.parse_label_text(read.text)
-        low = read.confidence is None or read.confidence < ocr.LOW_CONFIDENCE
-        return {**result, "confidence": read.confidence, "lowConfidence": low}
+    if response.is_error:
+        raise HTTPException(status_code=502, detail="The AI service returned an error. Please try again later.")
 
-    @app.post("/api/advisor/chat", dependencies=[Depends(limit("advisor", settings.advisor_rate_per_minute))])
-    def advisor_chat(req: advisor.AdvisorRequest):
-        client = make_client()
-        if client is None:
-            raise error(503, "ai_unavailable", "The Energy Advisor is not configured on this server (no AI provider key).")
-        try:
-            return advisor.ask(req, client, settings.gemini_model, settings.ai_timeout_seconds)
-        except advisor.AdvisorUnavailable as exc:
-            log.warning("advisor provider failure: %s", exc)
-            raise error(503, "ai_unavailable", "The Energy Advisor could not reach the AI service. Please try again later.")
-
-    @app.post("/api/calc/compare")
-    def calc_compare(body: CompareIn):
-        def u(x: UsageIn) -> energy.Usage:
-            q = int(x.quantity) if x.quantity == int(x.quantity) else x.quantity
-            return energy.Usage(x.wattage, x.hoursPerDay, x.days, q)  # type: ignore[arg-type]
-
-        try:
-            return energy.compare(u(body.baseline), u(body.scenario), body.rate)
-        except energy.CalcError as exc:
-            raise error(422, "invalid_calculation_input", str(exc))
-
-    return app
-
-
-app = create_app()
+    try:
+        result = response.json()
+    except ValueError as error:
+        raise HTTPException(status_code=502, detail="The AI service returned an invalid response.") from error
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="The AI service returned an invalid response.")
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+        raise HTTPException(status_code=502, detail="The AI service returned an empty reply.")
+    content = candidates[0].get("content")
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list):
+        raise HTTPException(status_code=502, detail="The AI service returned an empty reply.")
+    reply = next(
+        (part.get("text") for part in parts if isinstance(part, dict) and isinstance(part.get("text"), str)),
+        None,
+    )
+    if not reply or not reply.strip():
+        raise HTTPException(status_code=502, detail="The AI service returned an empty reply.")
+    return ChatReply(reply=reply.strip())

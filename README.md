@@ -1,90 +1,70 @@
-# SmartWatts — Household Electricity Savings Platform for Filipino Families
+# SmartWatts
 
-Hardware-free web app (PWA) that helps Meralco households see **what to change** to lower their bill.
-It implements the 20-step *SmartWatts Energy Workflow Flowchart* (Kuryentech proposal).
+SmartWatts is a responsive electricity dashboard with the classic SmartWatts UI and its interactive energy-saving game. The dashboard uses its original HTML, CSS, JavaScript, and Chart.js presentation; the multilingual AI chat is a React and TypeScript widget bundled by Vite.
 
-| Flow | Route |
-|---|---|
-| 1 Open · 2 Language | `/`, `/language` |
-| 3 Scan/upload or manual bill · 4–5 Review/confirm (Yes/No loop) · 6 Save | `/bill`, `/bill/review` |
-| 7–8 Add appliance (+ label scan) · 9–10 Review/validate (Yes/No) · 11 Save | `/appliances`, `/appliances/new` |
-| 12–13 What-If simulator · 15 Try another? · 16 Save plan | `/simulator` |
-| 14 Energy Advisor (EN / Filipino / Taglish) | `/advisor` |
-| 17 Trends (monthly/quarterly/yearly/seasonal) | `/analytics` |
-| 18 Manage/compare/recalculate plans | `/plans` |
-| 19 Advanced features (informational) · 20 Continue | `/more` |
+## Requirements
 
-Engineering checklist: [`PROJECT.md`](PROJECT.md) · current status per step: [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
+- Node.js 20+
+- Python 3.10+
+- A Firebase project with Anonymous Authentication and Cloud Firestore enabled
+- A Gemini API key configured only on the backend
 
-## Architecture
-- **frontend/** React 19 + TypeScript + Vite 8, Tailwind v4 + shadcn-style components, Recharts, vite-plugin-pwa.
-  - `src/lib/energy.ts` — deterministic calculator (works offline). Spec shared with backend: `spec/calc-cases.json`.
-  - Storage: **Firestore + Anonymous Auth + persistent IndexedDB cache** when `VITE_FIREBASE_*` is set (`firestore.rules` restricts data to `users/{uid}`); otherwise a **local-only mode** (browser storage, clearly labeled, no fake sync).
-- **backend/** FastAPI: `/api/ocr/bill`, `/api/ocr/label` (Tesseract; images processed in memory, only confirmed-needed numbers returned), `/api/advisor/chat` (Gemini with a calculator tool; figures not matching computed numbers are flagged), `/api/calc/compare`, `/api/health`. CORS allow-list, upload type/size/pixel limits, per-IP rate limiting.
+## Configure Firebase, Gemini, and translations
 
-Rates are never silently assumed: the user picks the effective rate from their bill (total ÷ kWh), a rate they enter (with month), the proposal's labeled reference ₱12.43/kWh (DOE PH average, June 2026), or none (kWh only).
+1. Copy `.env.example` to `.env`.
+2. Fill in the `VITE_FIREBASE_*` values from your Firebase web app.
+3. Enable **Anonymous** sign-in in Firebase Authentication and create a Firestore database.
+4. Deploy `firestore.rules` to the Firestore database.
+5. Set `FIREBASE_PROJECT_ID` and configure Google Application Default Credentials or `GOOGLE_APPLICATION_CREDENTIALS` for the FastAPI server. The backend verifies Firebase anonymous ID tokens before accepting chat requests.
+6. Set `GEMINI_API_KEY` and, optionally, `GEMINI_MODEL` in the backend process environment. The Gemini key must not use a `VITE_` prefix or be placed in frontend code. Rotate any key previously pasted into chat.
+7. Enable the Google Cloud Translation API and set `GOOGLE_TRANSLATE_API_KEY` in the backend environment. Restrict this key to the Translation API; it is used only by FastAPI and must never be exposed in frontend code.
+8. For production, set `ALLOWED_ORIGINS` to the exact frontend origin(s).
 
-## Configuration (one root `.env`)
-All configuration lives in **`SmartWatts/.env`** (git-ignored). `SmartWatts/.env.example` is the committed template with safe placeholders.
-```bash
-cp .env.example .env        # then edit .env; never commit it
-```
-- **Frontend (Vite)** reads it through `envDir` = repo root (`frontend/vite.config.ts`). Only `VITE_*` variables reach the browser.
-- **Backend (FastAPI)** loads it by absolute path (`backend/app/config.py`), so the working directory doesn't matter. Variables already set in the process environment (shell, CI, host) take precedence.
-- Template placeholders (`replace_with_…`) and empty values both count as **unset**.
-
-| Variable | Used by | Required? | If missing |
-|---|---|---|---|
-| `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID` | Browser (Firebase web config — public identifiers) | All four or none | None → **local-only mode** (data stays in this browser, labeled in the UI). Partial → dev/build **fails** naming the missing keys |
-| `VITE_API_BASE_URL` | Browser → API | No (default `/api`) | Must end with `/api`; production: `https://<backend>/api` |
-| `SMARTWATTS_API_TARGET` | Vite dev/preview proxy (Node only) | No | `http://127.0.0.1:8000` |
-| `GEMINI_API_KEY` | **Backend only — secret** | For the Energy Advisor | Advisor returns `503 ai_unavailable`; everything else works |
-| `GEMINI_MODEL` | Backend | No | `gemini-2.5-flash` |
-| `CORS_ORIGINS` | Backend | No | localhost:5173/4173; explicit origins only, no `*`, no paths |
-| `MAX_UPLOAD_BYTES`, `OCR_RATE_PER_MINUTE`, `ADVISOR_RATE_PER_MINUTE`, `AI_TIMEOUT_SECONDS` | Backend | No | 8 MB, 20, 15, 25 s. Invalid values stop startup with a message naming the variable |
-
-Safety checks built in:
-- Any `VITE_*` name that looks like a secret (e.g. `VITE_GEMINI_API_KEY`) fails the build.
-- `npm run check:secrets` scans `frontend/dist` for server secret values, the `GEMINI_API_KEY` name, private keys and unexpected Google API keys. It prints findings, never values.
-- Startup logs say what is enabled or disabled and never print secret values.
-- Firebase `storageBucket` and `messagingSenderId` are intentionally **not** used: the app uses neither Firebase Storage nor Cloud Messaging.
+Without Firebase settings the dashboard runs with sample data. Firestore guest accounts use per-user paths and Firestore's IndexedDB cache for offline reading access and writes.
 
 ## Run locally
-Prereqs: Node 20+, Python 3.11+, `brew install tesseract`.
-```bash
-cp .env.example .env                       # once, at the repo root; fill in what you have
-cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/uvicorn app.main:app --port 8000 # reads ../.env automatically
 
-cd ../frontend && npm install
-npm run dev                                # http://localhost:5173 (proxies /api -> :8000)
+In the project root:
+
+```powershell
+npm install
+npm run dev
 ```
 
-## Tests
-```bash
-cd backend && .venv/bin/python -m pytest -q   # calculator spec, OCR (real Tesseract), API, advisor, config loading
-cd frontend && npm run verify                 # typecheck + lint + unit/integration + build + bundle secret scan
-npx playwright install chromium && npm run e2e
+Open the Vite URL printed in the terminal (usually `http://localhost:5173`). Do not open the React source with `file://`.
+
+To serve the app through XAMPP/Apache instead, run `npm run build` first, make sure Apache's `mod_rewrite` is enabled and `.htaccess` overrides are allowed, then open the project folder through XAMPP. The project `.htaccess` serves the production build from `dist`; if the build is missing, it shows setup instructions instead of a blank page.
+
+In a second terminal from the project root, create and activate a Python environment, install backend requirements, and run FastAPI:
+
+```powershell
+python -m venv backend\.venv
+.\backend\.venv\Scripts\Activate.ps1
+pip install -r backend\requirements.txt
+uvicorn app.main:app --app-dir backend --reload
 ```
-E2E always builds with Firebase and `GEMINI_API_KEY` blanked through the process environment. That keeps it deterministic, writes nothing to a real Firestore, and makes no paid AI calls, whatever your `.env` contains.
 
-## Demo script
-Start → English → upload `frontend/e2e/fixtures/sample-bill.png` → check values → choose a rate → Yes, save →
-Add appliance: Electric fan, 65 W (or scan `fan-label.jpg`), 8 h/day, 30 days → Yes, save list →
-Simulator: change to 6 h → **3.9 kWh / ₱48.48** at ₱12.43 → No, save plan → refresh → plan still there → Trends.
+The Vite development server proxies `/api` requests to FastAPI on `127.0.0.1:8000`. Once Firebase and Google Cloud Translation are configured, the language selector lists the languages supported by the Translation API; dashboard and chat text are translated on demand through the backend. English and Tagalog remain available as local options if the translation service is not configured. OCR runs in the browser using Tesseract.js; review extracted kWh values or enter them manually before saving.
 
-## Firebase setup (to enable cloud mode)
-1. Create a Firebase project → add a Web app → copy `apiKey`, `authDomain`, `projectId`, `appId` into the root `.env` (`VITE_FIREBASE_*`).
-2. Authentication → Sign-in method → enable **Anonymous** (and **Google** for account linking; add your domain to Authorized domains).
-3. Firestore → create database → deploy rules: `npx firebase-tools deploy --only firestore:rules`.
-4. Restart `npm run dev` (the terminal shows `[smartwatts env] storage mode: firestore`). Settings shows "Your private cloud space" when active.
+## Checks
 
-## Deployment (prepared, not deployed)
-- Frontend: Vercel (`frontend/vercel.json`, SPA rewrites). In the Vercel project settings, set `VITE_FIREBASE_*` and `VITE_API_BASE_URL=https://<backend>/api`; **never** add `GEMINI_API_KEY` to the frontend project.
-- Backend: any host with Python + the `tesseract` binary; set `GEMINI_API_KEY` as a host secret and `CORS_ORIGINS` to the deployed frontend origin.
+```powershell
+npm test
+npm run build
+python -m pytest
+npm run test:e2e
+```
 
-## Known limitations
-- Advisor needs `GEMINI_API_KEY`; without it the app shows an honest "not available" state.
-- Firestore mode needs a Firebase project (Anonymous Auth enabled, rules deployed). Account linking uses Google sign-in.
-- First visit while offline in Firestore mode falls back to local storage for that session.
-- Weather insights, tenant/landlord and business tiers are proposals only (no prices, no payments).
+Playwright may require `npx playwright install chromium` on a new machine.
+
+## Included features
+
+- Dashboard, real-time/history views, analytics, device monitor, goals, rewards, billing, notifications, account, help, and about pages
+- Recharts usage visualizations and deterministic TypeScript calculation helpers
+- Firebase anonymous guest authentication, user-scoped Firestore readings, and IndexedDB offline cache
+- Gemini chat through FastAPI; the API key remains server-side
+- Browser OCR bill-entry flow with manual-entry fallback
+- Installable PWA app shell with offline caching
+- Five claimable energy challenges, Watts points, streaks, levels, and eight locally saved badges
+
+Electricity usage, bills, appliance breakdowns, and challenges are sample/demo values unless explicitly saved by a signed-in guest. This is not an official utility service and does not process payments.

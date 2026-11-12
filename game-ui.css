@@ -1,0 +1,19 @@
+.game-xp{margin-top:12px;background:#ffffff24}
+.game-xp span{background:linear-gradient(90deg,#ff7a00,#ffc700)}
+.game-stats{display:flex;flex-wrap:wrap;gap:24px;margin-top:16px}
+.game-stats>div{display:grid;gap:2px}
+.game-stats strong{font-size:16px}
+.game-stats small{color:#d6d9e0;font-size:10px}
+.quest-list{display:grid;gap:9px}
+.quest-row{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid #f1e9e2;border-radius:12px;background:#fff}
+.quest-row.done{background:#f8fbf8}
+.quest-icon{display:grid;flex:0 0 38px;height:38px;place-items:center;border-radius:12px;background:#fff1e7;font-size:20px}
+.quest-copy{min-width:0;flex:1}
+.quest-copy b{font-size:13px}
+.quest-copy p{margin:4px 0 0;color:var(--muted);font-size:11px;line-height:1.45}
+.quest-points{white-space:nowrap;color:#a35b05;font-size:11px;font-weight:800}
+.quest-row .btn{min-width:76px}
+.card-grid.reward-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.reward-grid .panel{min-height:145px}
+@media(max-width:980px){.card-grid.reward-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:540px){.quest-row{flex-wrap:wrap;gap:9px}.quest-copy{flex-basis:calc(100% - 52px)}.quest-points{margin-left:47px}.quest-row .btn{margin-left:auto}.card-grid.reward-grid{grid-template-columns:1fr}}

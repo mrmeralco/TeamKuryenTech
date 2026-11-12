@@ -1,0 +1,24 @@
+@import url("https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@600;700;800&display=swap");
+@import "tailwindcss";
+
+:root {
+  font-family: "Nunito", Arial, sans-serif;
+  color: #24202b;
+  background: #fffaf2;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --orange: #ff7a00;
+  --orange2: #ffc700;
+  --pale: #fff8e8;
+  --ink: #24202b;
+  --muted: #72717a;
+  --line: #f0e5d6;
+  --bg: #fffaf2;
+  --shadow: 0 12px 32px rgba(77, 52, 27, .075);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #fffaf2; }
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
+.font-display { font-family: "Fredoka", "Nunito", sans-serif; }
