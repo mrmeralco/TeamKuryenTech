@@ -22,6 +22,7 @@ from .settings import SecuritySettings
 from .store import BAN_SECONDS, store_from_settings
 
 logger = logging.getLogger("smartwatts.security")
+access_log = logging.getLogger("smartwatts.access")  # time comes from the log formatter / platform
 
 _SECURITY_KEYS = frozenset(k.lower().encode("latin-1") for k in SECURITY_HEADERS)
 
@@ -126,10 +127,14 @@ class SecurityMiddleware:
         started = False
         api = scope["path"].startswith("/api/")
 
+        status_code = 0
+        reason = ""
+
         async def send_with_headers(message):
-            nonlocal started
+            nonlocal started, status_code
             if message["type"] == "http.response.start":
                 started = True
+                status_code = message["status"]
                 kept = [(k, v) for k, v in message.get("headers", [])
                         if k.lower() not in REMOVED_HEADERS and k.lower() not in _SECURITY_KEYS
                         and not (api and k.lower() == b"cache-control")]
@@ -139,41 +144,50 @@ class SecurityMiddleware:
             await send(message)
 
         headers = _headers(scope)
-        violation = self._request_rule_violation(scope, headers)
-        if violation:
-            status, detail, extra = violation
-            await json_response(send_with_headers, status, {"detail": detail}, extra)
-            return
-
         ip = limits.client_ip(scope, headers, self.settings.client_ip_header)
-        state = scope.setdefault("state", {})
-        state["client_ip"] = ip
-        receive = rules.limited_receive(receive, rules.body_limit(scope["path"]))
         try:
-            if await self.store.ban_seconds(ip):
-                raise Blocked(403, "Forbidden", {"Retry-After": str(BAN_SECONDS)})
-            if limits.TRAP.search(scope["path"]):
-                raise Blocked(404, "Not Found", strike="honeypot")
-            if self.settings.rate_limits:
-                receive = await self._rate_limits(scope, headers, ip, receive)
-            await self.app(scope, receive, send_with_headers)
-        except Blocked as blocked:
-            if blocked.strike:
-                await self.strike(ip, blocked.strike, scope)
-            if not started:
-                await json_response(send_with_headers, blocked.status, {"detail": blocked.detail}, blocked.headers)
-            return
-        except rules.BodyTooLarge:
-            if not started:
-                await json_response(send_with_headers, 413, {"detail": "Request body too large"})
-            return
-        except Exception:  # never let a stack trace, path or hostname reach the client
-            logger.exception("Unhandled error on %s %s", scope.get("method"), scope.get("path", "")[:200])
-            if not started:
-                await json_response(send_with_headers, 500, {"detail": "Internal error"})
-            return
-        if state.get("security_strike"):
-            await self.strike(ip, state["security_strike"], scope)
+            violation = self._request_rule_violation(scope, headers)
+            if violation:
+                status, reason, extra = violation
+                await json_response(send_with_headers, status, {"detail": reason}, extra)
+                return
+
+            state = scope.setdefault("state", {})
+            state["client_ip"] = ip
+            receive = rules.limited_receive(receive, rules.body_limit(scope["path"]))
+            try:
+                if await self.store.ban_seconds(ip):
+                    raise Blocked(403, "Forbidden", {"Retry-After": str(BAN_SECONDS)}, strike="")
+                if limits.TRAP.search(scope["path"]):
+                    raise Blocked(404, "Not Found", strike="honeypot")
+                if self.settings.rate_limits:
+                    receive = await self._rate_limits(scope, headers, ip, receive)
+                await self.app(scope, receive, send_with_headers)
+            except Blocked as blocked:
+                reason = blocked.strike or ("banned" if blocked.status == 403 else blocked.detail)
+                if blocked.strike:
+                    await self.strike(ip, blocked.strike, scope)
+                if not started:
+                    await json_response(send_with_headers, blocked.status, {"detail": blocked.detail}, blocked.headers)
+                return
+            except rules.BodyTooLarge:
+                reason = "body too large"
+                if not started:
+                    await json_response(send_with_headers, 413, {"detail": "Request body too large"})
+                return
+            except Exception:  # never let a stack trace, path or hostname reach the client
+                reason = "unhandled error"
+                logger.exception("Unhandled error on %s %s", scope.get("method"), scope.get("path", "")[:200])
+                if not started:
+                    await json_response(send_with_headers, 500, {"detail": "Internal error"})
+                return
+            if state.get("security_strike"):
+                reason = state["security_strike"]
+                await self.strike(ip, reason, scope)
+        finally:
+            # Never logged: bodies, cookies, Authorization / API keys, query strings.
+            access_log.info("%s %s %s %s%s", ip, scope.get("method"), scope.get("path", "")[:200], status_code,
+                            f" blocked={reason}" if reason else "")
 
     async def strike(self, ip: str, reason: str, scope) -> None:
         banned = await self.store.strike(ip)
