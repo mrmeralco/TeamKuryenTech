@@ -688,13 +688,63 @@ export function enhanceCanvasForOcr(sourceCanvas: HTMLCanvasElement): HTMLCanvas
   return canvas;
 }
 
+/** A recognized word and its box in image pixels. */
+export interface OcrWord {
+  text: string;
+  confidence: number;
+  bbox: { x0: number; y0: number; x1: number; y1: number };
+}
+
+type TessWord = { text?: string; confidence?: number; bbox?: OcrWord["bbox"] };
+type TessBlock = { paragraphs?: { lines?: { words?: TessWord[] }[] }[] };
+
+function wordsFromBlocks(blocks: unknown): OcrWord[] {
+  if (!Array.isArray(blocks)) return [];
+  const out: OcrWord[] = [];
+  for (const block of blocks as TessBlock[]) {
+    for (const p of block.paragraphs ?? []) for (const line of p.lines ?? []) for (const w of line.words ?? []) {
+      if (w.text && w.text.trim() && w.bbox) out.push({ text: w.text.trim(), confidence: w.confidence ?? 0, bbox: w.bbox });
+    }
+  }
+  return out;
+}
+
+/**
+ * Words worth highlighting (Lens-style): the ones that produced a detected spec.
+ * Returns the index of each highlighted word and which spec it belongs to.
+ */
+export function highlightWords(words: OcrWord[], specs: ApplianceOcrResult): Map<number, string> {
+  const hits = new Map<number, string>();
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9.]/g, "");
+  const numberIn = (s: string) => {
+    const m = s.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+    return m ? Number(m[0]) : null;
+  };
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.011 * Math.max(1, Math.abs(b));
+  const voltsNumber = specs.voltage ? numberIn(specs.voltage) : null;
+  words.forEach((w, i) => {
+    const t = norm(w.text);
+    const n = numberIn(w.text);
+    const next = words[i + 1] ? norm(words[i + 1].text) : "";
+    const unit = `${t} ${next}`;
+    if (specs.brand && t && specs.brand.split(/\s+/).map(norm).some((b) => b && t === b)) hits.set(i, "brand");
+    else if (specs.model && t.length >= 3 && norm(specs.model).includes(t)) hits.set(i, "model");
+    else if (n != null && specs.watts != null && near(n, specs.watts) && /w\b|watt|w$/.test(unit) && !/kwh/.test(t)) hits.set(i, "watts");
+    else if (n != null && specs.testedKwhMonth != null && near(n, specs.testedKwhMonth)) hits.set(i, "kwh");
+    else if (n != null && voltsNumber != null && near(n, voltsNumber) && /v/.test(unit)) hits.set(i, "volts");
+    else if (n != null && specs.energyEfficiencyRating != null && near(n, specs.energyEfficiencyRating)) hits.set(i, "eer");
+    else if (/^(watts?|w|kwh|v|volts?|hz)$/.test(t) && hits.has(i - 1)) hits.set(i, hits.get(i - 1)!);
+  });
+  return hits;
+}
+
 /**
  * Recognize an appliance label image using Tesseract.js with live progress reporting.
  */
 export async function recognizeApplianceLabel(
   imageSource: File | HTMLCanvasElement,
   onProgress?: (progress: { stage: string; percent: number }) => void,
-): Promise<{ text: string; specs: ApplianceOcrResult }> {
+): Promise<{ text: string; specs: ApplianceOcrResult; words: OcrWord[] }> {
   if (imageSource instanceof File) {
     if (!imageSource.type.startsWith("image/")) {
       throw new Error("Please select an image file (PNG, JPG, WebP), or enter details manually.");
@@ -717,12 +767,13 @@ export async function recognizeApplianceLabel(
 
   try {
     onProgress?.({ stage: "Recognizing specifications…", percent: 30 });
-    const { data } = await worker.recognize(imageSource);
+    // blocks: true -> word bounding boxes, used for the Google Lens-style highlight overlay.
+    const { data } = await worker.recognize(imageSource, {}, { text: true, blocks: true } as never);
     onProgress?.({ stage: "Extracting electrical ratings…", percent: 95 });
     const text = data.text;
     const specs = extractApplianceSpecs(text);
     onProgress?.({ stage: "Complete", percent: 100 });
-    return { text, specs };
+    return { text, specs, words: wordsFromBlocks((data as { blocks?: unknown }).blocks) };
   } finally {
     await worker.terminate();
   }

@@ -5,12 +5,16 @@ import {
   saveAppliance, saveBill, saveSavingsPlan, saveUserProfile, storageMode,
 } from "./src/lib/personal/store.ts";
 import { effectiveRateCentavosPerKwh, estimateMonthlyKwh, simulateSavings } from "./src/lib/personal/estimates.ts";
-import { extractBillFields, recognizeImage, redactBillText } from "./src/lib/ocr.ts";
+import { extractBillFields, redactBillText } from "./src/lib/ocr.ts";
+import { photoQuality, scanMeralcoBillPages, toDashboardComponents } from "./src/lib/meralcoScanner.ts";
+import { openBillCamera, openCropEditor } from "./src/lib/billCamera.ts";
+import { buildIcs, calendarEvents, daysBetween, googleCalendarLink, monthMatrix, predictNext } from "./src/lib/billSchedule.ts";
+import { ALL_APPLIANCES, WATTAGE_SOURCE, findAppliancePreset } from "./src/lib/applianceWattage.ts";
 import { CHARGE_CATEGORIES, categoryLabel, compareScenario, deriveRateProfile, enteredRateProfile, reconcileBill } from "./src/lib/billing/meralco.ts";
 import {
-  extractApplianceSpecs, recognizeApplianceLabel, rotateCanvas,
+  extractApplianceSpecs, highlightWords, recognizeApplianceLabel, rotateCanvas,
 } from "./src/lib/appliance-ocr.ts";
-import { parsePesoToCentavos, formatKwh } from "./src/lib/format.ts";
+import { escapeHtml, parsePesoToCentavos, formatKwh } from "./src/lib/format.ts";
 import {
   continueWithGoogle, createPermanentAccount, currentAccount, friendlyAuthError,
   resendVerification, signInPermanent, signOutAccount,
@@ -53,7 +57,13 @@ function renderScannerPreview(root, state) {
   const previewHtml = `
     <div class="scanner-box">
       <div class="scanner-preview-wrapper">
-        <canvas class="scanner-preview-img" id="scannerCanvasView"></canvas>
+        <div class="lens-stage${state.processing ? " lens-scanning" : ""}">
+          <canvas class="scanner-preview-img" id="scannerCanvasView"></canvas>
+          <div class="lens-layer" data-lens-layer aria-hidden="true"></div>
+          <div class="lens-shimmer" aria-hidden="true"></div>
+        </div>
+        <p class="lens-ai" data-lens-ai aria-live="polite"></p>
+        <div class="lens-chips" data-lens-chips></div>
         <div class="scanner-toolbar">
           <button type="button" class="btn btn-outline btn-small" data-act="scanner-rotate-ccw">↺ Rotate Left (90°)</button>
           <button type="button" class="btn btn-outline btn-small" data-act="scanner-rotate-cw">↻ Rotate Right (90°)</button>
@@ -109,6 +119,154 @@ function updateLiveEstimate(root) {
   }
 }
 
+// ------------------------------------------------------------------ typical wattage presets
+const fmtW = (w) => `${Number(w).toLocaleString("en-PH")} W`;
+
+/** Show the typical wattage for what was typed (or what OCR found), with a one-tap "use" button. */
+function showAppliancePreset(root, query, { fromScan = false } = {}) {
+  const form = root?.querySelector('[data-form="appliance-save"]');
+  if (!form) return;
+  const preset = findAppliancePreset(query);
+  if (!preset) { fill(root, "appliance-preset-hint", ""); return; }
+  if (!fromScan && CATEGORIES.includes(preset.category)) form.elements.category.value = preset.category;
+  const hasWatts = Number(form.elements.watts.value) > 0;
+  fill(root, "appliance-preset-hint", `
+    <div class="preset-hint">
+      <span class="preset-icon">💡</span>
+      <div>
+        <b>${user(preset.name)}</b> usually uses <b>${fmtW(preset.minWatts)}${preset.maxWatts !== preset.minWatts ? `–${fmtW(preset.maxWatts)}` : ""}</b>${preset.standbyWatts ? ` (standby ${preset.standbyWatts} W)` : ""}.
+        <small>${fromScan ? "The label’s wattage could not be read, so this is a typical value. " : ""}Typical range — your label or manual is more accurate. Source: <a href="${WATTAGE_SOURCE.url}" target="_blank" rel="noopener">Daft Logic</a>.</small>
+      </div>
+      <button type="button" class="btn btn-outline btn-small" data-act="preset-use" data-watts="${preset.typicalWatts}" data-hours="${preset.hoursPerDay}">${hasWatts ? "Replace with" : "Use"} ${fmtW(preset.typicalWatts)}</button>
+    </div>`);
+}
+
+document.addEventListener("input", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || input.name !== "name" || !input.closest('[data-form="appliance-save"]')) return;
+  showAppliancePreset(document.querySelector("#content"), input.value);
+});
+
+function applyPresetWatts(button) {
+  const root = document.querySelector("#content");
+  const form = root?.querySelector('[data-form="appliance-save"]');
+  if (!form) return;
+  form.elements.watts.value = button.dataset.watts;
+  if (form.elements.consumptionBasis) form.elements.consumptionBasis.value = "wattage";
+  // Only replace the default 8 h/day, never a schedule the person typed.
+  if (!form.elements.hoursPerDay.value || form.elements.hoursPerDay.value === "8") form.elements.hoursPerDay.value = button.dataset.hours;
+  updateLiveEstimate(root);
+  button.textContent = "Applied ✓";
+}
+
+// ------------------------------------------------------------------ AI identify (Gemini Vision)
+// Recognizes WHAT the appliance is from the photo itself (e.g. an electric fan with no label),
+// then uses the typical-wattage list when the label gives no rating. Printed specs still win.
+const GENERIC_NAMES = new Set(["", "appliance", "other", "unknown"]);
+
+async function identifyApplianceWithAi(ctx, root, { auto }) {
+  if (!scannerState?.canvas || !root) return;
+  const stage = root.querySelector(".lens-stage");
+  const status = root.querySelector("[data-lens-ai]");
+  stage?.classList.add("lens-scanning");
+  if (status) status.innerHTML = `<span class="lens-ai-spin"></span> Identifying the appliance…`;
+  try {
+    const base64 = scannerState.canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
+    const result = await apiPost("/api/ai/appliance-label", { image_base64: base64, mime_type: "image/jpeg" });
+    const form = root.querySelector('[data-form="appliance-save"]');
+    if (!form) return;
+    const typeText = [result.size_hint, result.appliance_type].filter(Boolean).join(" ");
+    const preset = findAppliancePreset(typeText) ?? findAppliancePreset(result.appliance_type);
+    const currentName = form.elements.name.value.trim().toLowerCase();
+    if (result.appliance_type && GENERIC_NAMES.has(currentName)) form.elements.name.value = (preset?.name ?? result.appliance_type).slice(0, 60);
+    if (preset && CATEGORIES.includes(preset.category)) form.elements.category.value = preset.category;
+    if (result.brand && !form.elements.brand.value) form.elements.brand.value = result.brand;
+    if (result.model && !form.elements.model.value) form.elements.model.value = result.model;
+    if (result.voltage && !form.elements.voltage.value) form.elements.voltage.value = result.voltage;
+    if (result.tested_kwh_month && !form.elements.testedKwhMonth.value) form.elements.testedKwhMonth.value = result.tested_kwh_month;
+    const labelWatts = result.watts != null && result.watts > 0;
+    if (labelWatts) form.elements.watts.value = result.watts;
+    form.elements.source.value = "ai";
+
+    // No printed rating: fill the typical wattage for this kind of appliance (clearly labelled as typical).
+    let usedTypical = false;
+    if (!labelWatts && !(Number(form.elements.watts.value) > 0) && !form.elements.testedKwhMonth.value && preset) {
+      form.elements.watts.value = preset.typicalWatts;
+      form.elements.consumptionBasis.value = "wattage";
+      if (!form.elements.hoursPerDay.value || form.elements.hoursPerDay.value === "8") form.elements.hoursPerDay.value = preset.hoursPerDay;
+      if (!form.elements.scheduleNote.value) form.elements.scheduleNote.value = "Typical wattage — no rating label scanned";
+      usedTypical = true;
+    }
+    if (preset) showAppliancePreset(root, preset.name, { fromScan: !labelWatts });
+
+    const what = result.appliance_type ? `${result.appliance_type}${result.size_hint ? ` (${result.size_hint})` : ""}` : "an appliance";
+    const chipRow = root.querySelector(".lens-chip-row") ?? (() => {
+      const chips = root.querySelector("[data-lens-chips]");
+      if (!chips) return null;
+      chips.innerHTML = `<p class="lens-chips-title">Identified from the photo · tap a detail to edit it</p><div class="lens-chip-row"></div>`;
+      return chips.querySelector(".lens-chip-row");
+    })();
+    if (chipRow && result.appliance_type) {
+      chipRow.insertAdjacentHTML("afterbegin", `<button type="button" class="lens-chip lens-ai" data-act="lens-focus" data-field="name"><span>🔎</span><small>${result.identified_from === "object" ? "Looks like" : "Appliance"}</small><b>${ctx.escape(what)}</b></button>${usedTypical ? `<button type="button" class="lens-chip lens-watts" data-act="lens-focus" data-field="watts"><span>⚡</span><small>Typical power</small><b>${fmtW(preset.typicalWatts)}</b></button>` : ""}`);
+    }
+    if (status) {
+      status.innerHTML = result.appliance_type
+        ? `✨ ${result.identified_from === "object" ? "Recognized from the photo" : "Read from the label"}: <b>${ctx.escape(what)}</b>${usedTypical ? ` — no rating label found, so the typical ${fmtW(preset.typicalWatts)} is filled in. Scan the rating sticker for the exact value.` : ""}`
+        : "Couldn’t tell what appliance this is — type the name below.";
+    }
+    updateLiveEstimate(root);
+    if (!auto) ctx.toast("AI analysis complete! Please review and confirm before saving.");
+  } catch (error) {
+    if (status) status.textContent = auto
+      ? `AI identify unavailable (${errorMessage(error)}). Type the appliance name below to get its typical wattage.`
+      : errorMessage(error);
+    if (!auto) ctx.toast(errorMessage(error));
+  } finally {
+    stage?.classList.remove("lens-scanning");
+    ctx.translate?.(root);
+  }
+}
+
+// Google Lens-style result: every recognized word gets a soft box on the photo, the words
+// behind a detected spec glow orange, and the detected specs appear as chips below.
+const LENS_KINDS = {
+  brand: { icon: "🏷️", label: "Brand", field: "brand" },
+  model: { icon: "#", label: "Model", field: "model" },
+  watts: { icon: "⚡", label: "Power", field: "watts" },
+  volts: { icon: "🔌", label: "Voltage", field: "voltage" },
+  kwh: { icon: "📅", label: "Tested energy", field: "testedKwhMonth" },
+  eer: { icon: "⭐", label: "EER", field: "energyEfficiencyRating" },
+};
+
+function drawLensResults(root, canvas, words, specs, ctx) {
+  root.querySelector(".lens-stage")?.classList.remove("lens-scanning");
+  const layer = root.querySelector("[data-lens-layer]");
+  const chips = root.querySelector("[data-lens-chips]");
+  if (!layer || !canvas?.width) return;
+  const hits = highlightWords(words, specs);
+  const W = canvas.width, H = canvas.height;
+  layer.innerHTML = words.map((w, i) => {
+    const kind = hits.get(i);
+    const { x0, y0, x1, y1 } = w.bbox;
+    const style = `left:${(x0 / W) * 100}%;top:${(y0 / H) * 100}%;width:${((x1 - x0) / W) * 100}%;height:${((y1 - y0) / H) * 100}%;animation-delay:${Math.min(i * 12, 900)}ms`;
+    return `<span class="lens-word${kind ? ` lens-hit lens-${kind}` : ""}" style="${style}"${kind ? ` data-act="lens-focus" data-field="${LENS_KINDS[kind].field}" title="${LENS_KINDS[kind].label}"` : ""}></span>`;
+  }).join("");
+  const values = [
+    ["brand", specs.brand],
+    ["model", specs.model],
+    ["watts", specs.watts != null ? `${specs.watts} W` : null],
+    ["volts", specs.voltage],
+    ["kwh", specs.testedKwhMonth != null ? `${specs.testedKwhMonth.toFixed(2)} kWh/mo` : null],
+    ["eer", specs.energyEfficiencyRating != null ? `${specs.energyEfficiencyRating}` : null],
+  ].filter(([, v]) => v != null && v !== "");
+  if (chips) {
+    chips.innerHTML = values.length
+      ? `<p class="lens-chips-title">${words.length} words found · tap a detail to edit it</p>
+         <div class="lens-chip-row">${values.map(([kind, v]) => `<button type="button" class="lens-chip lens-${kind}" data-act="lens-focus" data-field="${LENS_KINDS[kind].field}"><span>${LENS_KINDS[kind].icon}</span><small>${LENS_KINDS[kind].label}</small><b>${ctx.escape(String(v))}</b></button>`).join("")}</div>`
+      : `<p class="lens-chips-title">${words.length ? `${words.length} words found, but no ratings recognized — retake closer, or type them below.` : "No text found — retake the photo closer and in good light."}</p>`;
+  }
+}
+
 async function runApplianceOcr(ctx, root) {
   if (!scannerState || !scannerState.canvas) return;
   const progressArea = root.querySelector("#scannerProgressArea");
@@ -122,10 +280,17 @@ async function runApplianceOcr(ctx, root) {
   };
 
   try {
-    const { specs } = await recognizeApplianceLabel(scannerState.canvas, onProgress);
+    const { specs, words } = await recognizeApplianceLabel(scannerState.canvas, onProgress);
     scannerState.specs = specs;
     scannerState.processing = false;
     if (progressArea) progressArea.style.display = "none";
+    drawLensResults(root, scannerState.canvas, words, specs, ctx);
+    // Label wattage unreadable and no tested kWh: suggest the typical wattage for this appliance,
+    // and let the AI recognize what the appliance is from the photo itself (no label needed).
+    if (specs.watts == null && specs.testedKwhMonth == null) {
+      showAppliancePreset(root, specs.name || specs.category, { fromScan: true });
+      identifyApplianceWithAi(ctx, root, { auto: true });
+    } else fill(root, "appliance-preset-hint", "");
 
     const form = root.querySelector('[data-form="appliance-save"]');
     if (form) {
@@ -230,10 +395,9 @@ function appliancesPage(ctx) {
     <div class="two-panels">
       ${ctx.panel("Add an appliance", `
         <div class="scanner-mode-bar">
-          <label class="btn btn-primary scanner-btn" title="Take a photo with your device camera">
-            <input type="file" accept="image/*" capture="environment" data-ocr="appliance-label" style="display:none">
+          <button type="button" class="btn btn-primary scanner-btn" data-act="appliance-camera" title="Scan the label with your camera, like Google Lens">
             <span>📷 Scan Appliance Label</span>
-          </label>
+          </button>
           <label class="btn btn-outline scanner-btn" title="Choose a photo from your computer or phone">
             <input type="file" accept="image/*" data-ocr="appliance-label" style="display:none">
             <span>📁 Upload Label Photo</span>
@@ -250,13 +414,15 @@ function appliancesPage(ctx) {
           <input type="hidden" name="voltage" value="">
           <input type="hidden" name="labelType" value="UNKNOWN">
           <input type="hidden" name="consumptionBasis" value="none">
-          ${field("Name", `<input name="name" required maxlength="60" placeholder="e.g. Bedroom aircon">`)}
+          ${field("Name", `<input name="name" required maxlength="60" placeholder="e.g. Bedroom aircon" list="appliance-presets" autocomplete="off">`)}
+          <datalist id="appliance-presets">${ALL_APPLIANCES.map((p) => `<option value="${escapeHtml(p.name)}"></option>`).join("")}</datalist>
           ${field("Brand (optional)", `<input name="brand" maxlength="60" placeholder="e.g. Carrier">`)}
           ${field("Model (optional)", `<input name="model" maxlength="60" placeholder="e.g. FP-53CAS010">`)}
           ${field("Category", `<select name="category" class="select">${CATEGORIES.map((c) => `<option value="${c}">${c[0].toUpperCase()}${c.slice(1)}</option>`).join("")}</select>`)}
           ${field("Power (watts)", `<input name="watts" type="number" min="0" max="20000" step="any" placeholder="e.g. 150">`, { hint: "Check label or manual. Leave blank if label has verified kWh/month." })}
           ${field("Tested energy (kWh/month, optional)", `<input name="testedKwhMonth" type="number" min="0.1" max="5000" step="any" placeholder="e.g. 26.10">`, { hint: "From manufacturer energy guide or efficiency label." })}
           ${field("Energy efficiency rating (optional)", `<input name="energyEfficiencyRating" type="number" min="1" max="10000" step="any" placeholder="e.g. 253">`, { hint: "EER or star rating (dimensionless, not watts)." })}
+          <div class="field full" data-slot="appliance-preset-hint"></div>
           <div class="field full" data-slot="wattage-status"></div>
           ${field("Quantity", `<input name="quantity" type="number" min="1" max="50" step="1" value="1" required>`)}
           ${field("Hours used per day", `<input name="hoursPerDay" type="number" min="0" max="24" step="0.25" value="8" required>`)}
@@ -273,11 +439,69 @@ function appliancesPage(ctx) {
         </form>`)}
       ${ctx.panel("Estimated monthly usage", slot("appliance-summary"))}
     </div>
-    <div style="margin-top:14px">${ctx.panel("Registered appliances", slot("appliances"))}</div>`;
+    <div style="margin-top:14px">${ctx.panel("Registered appliances", slot("appliances"))}</div>
+    <div style="margin-top:14px">${ctx.panel(`All appliances <small>(${ALL_APPLIANCES.length} typical household appliances)</small>`, `
+      <p class="muted-note">Tap <b>＋ Add</b> to register an appliance with its typical wattage, then edit it to match your label. Source: <a href="${WATTAGE_SOURCE.url}" target="_blank" rel="noopener">Daft Logic</a> + SmartWatts Philippine household list.</p>
+      <div class="catalog-tools">
+        <input class="input" type="search" data-catalog-search placeholder="Search e.g. aircon, ref, rice cooker, PS5…" aria-label="Search appliances">
+        <select class="select" data-catalog-cat aria-label="Filter by category">
+          <option value="">All categories</option>
+          ${CATEGORIES.map((c) => `<option value="${c}">${c[0].toUpperCase()}${c.slice(1)}</option>`).join("")}
+        </select>
+      </div>
+      ${slot("appliance-catalog")}`)}</div>`;
+}
+
+// ------------------------------------------------------------- appliance catalog
+let registeredNames = new Set();
+
+function catalogRows(query = "", category = "") {
+  const q = query.trim().toLowerCase();
+  const seen = new Set();
+  const items = ALL_APPLIANCES.filter((p) => {
+    const key = p.name.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (category && p.category !== category) return false;
+    return !q || [p.name, ...p.aliases].some((n) => n.toLowerCase().includes(q));
+  });
+  if (!items.length) return `<p class="muted-note">No appliance matches “${escapeHtml(query)}”. You can still add it with the form above.</p>`;
+  return `<div class="catalog-scroll">${table(
+    ["Appliance", "Typical power", "Standby", "Est. kWh / month", ""],
+    items.map((p) => {
+      const index = ALL_APPLIANCES.indexOf(p);
+      const kwh = estimateMonthlyKwh({ watts: p.typicalWatts, quantity: 1, hoursPerDay: p.hoursPerDay, daysPerWeek: 7 });
+      const added = registeredNames.has(p.name.toLowerCase());
+      return [
+        `<b>${user(p.name)}</b>${p.aliases.length ? `<div class="muted-note">${user(p.aliases.slice(0, 3).join(", "))}</div>` : ""}<div class="muted-note">${user(p.category)}</div>`,
+        `${p.minWatts === p.maxWatts ? fmtW(p.minWatts) : `${fmtW(p.minWatts)}–${fmtW(p.maxWatts)}`}`,
+        p.standbyWatts != null ? fmtW(p.standbyWatts) : "—",
+        `${formatKwh(kwh)} <small class="muted-note">at ${p.hoursPerDay} h/day</small>`,
+        added
+          ? `<span class="catalog-added">✓ Added</span>`
+          : `<button type="button" class="btn btn-outline btn-small" data-act="catalog-add" data-index="${index}">＋ Add</button>`,
+      ];
+    }),
+  )}</div><p class="muted-note">${items.length} shown. Typical values are estimates — your appliance label is more accurate.</p>`;
+}
+
+function renderCatalog(root = document.querySelector("#content")) {
+  if (!root?.querySelector('[data-slot="appliance-catalog"]')) return;
+  const query = root.querySelector("[data-catalog-search]")?.value ?? "";
+  const category = root.querySelector("[data-catalog-cat]")?.value ?? "";
+  fill(root, "appliance-catalog", catalogRows(query, category));
+}
+
+for (const type of ["input", "change"]) {
+  document.addEventListener(type, (event) => {
+    if (event.target instanceof Element && event.target.matches("[data-catalog-search], [data-catalog-cat]")) renderCatalog();
+  });
 }
 
 async function loadAppliances(_ctx, root) {
   const appliances = await listAppliances();
+  registeredNames = new Set(appliances.map((a) => String(a.name).toLowerCase()));
+  renderCatalog(root);
   const form = root.querySelector('[data-form="appliance-save"]');
   if (form) {
     form.addEventListener("input", () => updateLiveEstimate(root));
@@ -376,12 +600,9 @@ function billsPage(ctx) {
     ${ctx.pageHead("Bill upload & history", "Scan your electricity bill or type the figures, then keep a private history.")}
     <div class="two-panels">
       ${ctx.panel("Add a bill", `
-        <label class="upload-drop">
-          <input type="file" accept="image/*" class="sr-only" data-ocr="personal-bill">
-          <span>Upload bill photo (OCR runs in your browser)</span>
-        </label>
+        <div data-slot="bill-scanner">${billScannerHtml()}</div>
         <p class="muted-note" data-slot="ocr-status"></p>
-        <p class="muted-note privacy-note">🔒 Privacy: the photo is read on this device and is never uploaded or stored. SmartWatts keeps only the billing figures you confirm below — not your name, address, account, or meter numbers.</p>
+        <p class="muted-note privacy-note">🔒 Privacy: the photo or PDF is read on this device and is never uploaded or stored. SmartWatts keeps only the billing figures you confirm below — not your name, address, account, or meter numbers.</p>
         <form class="form-grid" data-form="bill-save">
           <input type="hidden" name="source" value="manual">
           ${field("Period start", `<input name="periodStart" type="date" required>`)}
@@ -402,11 +623,114 @@ function billsPage(ctx) {
         <p class="muted-note">Always check OCR suggestions against your printed bill before saving.</p>`)}
       ${ctx.panel("Your average rate", slot("bill-rate"))}
     </div>
+    <div style="margin-top:14px">${ctx.panel("📅 Bill calendar <small>(dates from your scanned bills + predicted next payment)</small>", slot("bill-calendar"))}</div>
     <div style="margin-top:14px">${ctx.panel("Billing history", slot("bills"))}</div>`;
 }
 
+// ---------------------------------------------------------------- bill calendar
+// Dates read from scanned bills are kept on this device (keyed by billing-period end) and
+// merged with saved bills; the next bill and payment due date are predicted from them.
+const BILL_DATES_KEY = "smartwatts-bill-dates";
+const billCal = { history: [], month: null };
+
+function readBillDates() {
+  try { return JSON.parse(localStorage.getItem(BILL_DATES_KEY) || "{}") || {}; } catch { return {}; }
+}
+
+function saveBillDates(entry) {
+  try {
+    const all = readBillDates();
+    all[entry.periodEnd] = { ...all[entry.periodEnd], ...Object.fromEntries(Object.entries(entry).filter(([, v]) => v != null)) };
+    localStorage.setItem(BILL_DATES_KEY, JSON.stringify(all));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const longDate = (iso) => (iso ? new Date(`${iso}T00:00:00`).toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric", year: "numeric" }) : "—");
+const EVENT_ICONS = { bill: "🧾", due: "💸", reading: "🔎", "predicted-bill": "🧾", "predicted-due": "💸" };
+
+function billCalendarHtml() {
+  const history = billCal.history;
+  if (!history.length) {
+    return `<p class="muted-note">Scan a bill above — its bill date, due date and next meter reading are added here automatically, and SmartWatts predicts your next payment.</p>`;
+  }
+  const prediction = predictNext(history);
+  const events = calendarEvents(history, prediction);
+  const today = todayIso();
+  const dueIn = prediction.nextDueDate ? daysBetween(today, prediction.nextDueDate) : null;
+  const amount = prediction.estimatedAmountCentavos != null ? formatPeso(prediction.estimatedAmountCentavos) : null;
+  const details = `Predicted by SmartWatts from your past bills${amount ? `. Estimated amount: ${amount}` : ""}. Check your actual Meralco bill.`;
+
+  if (!billCal.month) billCal.month = (prediction.nextDueDate ?? today).slice(0, 7);
+  const [y, m] = billCal.month.split("-").map(Number);
+  const weeks = monthMatrix(y, m);
+  const byDate = new Map();
+  for (const e of events) byDate.set(e.date, [...(byDate.get(e.date) ?? []), e]);
+  const monthLabel = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-PH", { month: "long", year: "numeric", timeZone: "UTC" });
+
+  return `
+    <div class="billcal-next">
+      <div>
+        <span class="billcal-label">Next payment due ${kindBadge("estimate")}</span>
+        <b class="billcal-date">${longDate(prediction.nextDueDate)}</b>
+        <span class="billcal-sub">${dueIn == null ? "" : dueIn < 0 ? `${-dueIn} day(s) ago` : dueIn === 0 ? "Today" : `in ${dueIn} day(s)`}${amount ? ` · about <b>${amount}</b>` : ""}</span>
+        <span class="billcal-sub">Next bill expected ${longDate(prediction.nextBillDate)}</span>
+      </div>
+      <div class="billcal-actions">
+        ${prediction.nextDueDate ? `<a class="btn btn-primary btn-small" target="_blank" rel="noopener" href="${escapeHtml(googleCalendarLink(prediction.nextDueDate, "Pay Meralco bill (SmartWatts reminder)", details))}">＋ Google Calendar</a>` : ""}
+        <button type="button" class="btn btn-outline btn-small" data-act="bill-ics">⬇ Download .ics</button>
+      </div>
+    </div>
+    <p class="muted-note">${escapeHtml(prediction.basis)}</p>
+    <div class="billcal-head">
+      <button type="button" class="btn btn-outline btn-small" data-act="bill-cal-month" data-step="-1" aria-label="Previous month">‹</button>
+      <b>${monthLabel}</b>
+      <button type="button" class="btn btn-outline btn-small" data-act="bill-cal-month" data-step="1" aria-label="Next month">›</button>
+    </div>
+    <div class="billcal-grid" role="grid" aria-label="${monthLabel}">
+      ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => `<div class="billcal-dow">${d}</div>`).join("")}
+      ${weeks.flat().map((date) => {
+        if (!date) return `<div class="billcal-day empty"></div>`;
+        const dayEvents = byDate.get(date) ?? [];
+        return `<div class="billcal-day${date === today ? " today" : ""}${dayEvents.length ? " has" : ""}">
+          <span class="billcal-num">${Number(date.slice(8))}</span>
+          ${dayEvents.map((e) => `<span class="billcal-ev ev-${e.kind}${e.predicted ? " predicted" : ""}" title="${escapeHtml(`${e.title}${e.amountCentavos ? ` · ${formatPeso(e.amountCentavos)}` : ""}`)}">${EVENT_ICONS[e.kind]} <i>${escapeHtml(e.title.replace(" (predicted)", ""))}</i></span>`).join("")}
+        </div>`;
+      }).join("")}
+    </div>
+    <p class="billcal-legend"><span class="billcal-ev ev-bill">🧾 Bill issued</span><span class="billcal-ev ev-due">💸 Payment due</span><span class="billcal-ev ev-reading">🔎 Meter reading</span><span class="billcal-ev ev-predicted-due predicted">Dashed = predicted</span></p>`;
+}
+
+function renderBillCalendar(root = document.querySelector("#content")) {
+  if (root?.querySelector('[data-slot="bill-calendar"]')) fill(root, "bill-calendar", billCalendarHtml());
+}
+
+const billCalendarActions = {
+  "bill-cal-month"(button) {
+    const [y, m] = (billCal.month ?? todayIso().slice(0, 7)).split("-").map(Number);
+    const d = new Date(Date.UTC(y, m - 1 + Number(button.dataset.step), 1));
+    billCal.month = d.toISOString().slice(0, 7);
+    renderBillCalendar();
+  },
+  "bill-ics"() {
+    const events = calendarEvents(billCal.history);
+    const blob = new Blob([buildIcs(events)], { type: "text/calendar" });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement("a"), { href: url, download: "smartwatts-bill-calendar.ics" });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
+};
+
 async function loadBills(_ctx, root) {
   const bills = (await listBills()).sort((a, b) => b.periodEnd.localeCompare(a.periodEnd));
+  const stored = readBillDates();
+  billCal.history = bills.map((b) => ({ periodStart: b.periodStart, periodEnd: b.periodEnd, amountCentavos: b.amountCentavos, ...stored[b.periodEnd] }));
+  renderBillCalendar(root);
   const latestRate = effectiveRateCentavosPerKwh(bills[0]);
   fill(root, "bill-rate", latestRate
     ? `<div class="bill-amount">${formatPeso(Math.round(latestRate))}<small>/kWh</small></div><p class="stat-foot">${kindBadge("official_utility_bill")} Calculated from your latest bill (amount ÷ kWh).</p>`
@@ -744,6 +1068,15 @@ export const personalForms = {
       components: Object.keys(components).length ? components : null,
       previousReading: reading(v.previousReading), presentReading: reading(v.presentReading),
     });
+    // Dates read by the scanner go straight onto the bill calendar.
+    const scanned = billScan.result?.bill?.billing;
+    if (scanned && (scanned.dueDate || scanned.billDate || scanned.nextReadingDate) && (!scanned.periodEnd || scanned.periodEnd === String(v.periodEnd))) {
+      saveBillDates({
+        periodEnd: String(v.periodEnd), periodStart: String(v.periodStart), amountCentavos,
+        billDate: scanned.billDate, dueDate: scanned.dueDate, nextReadingDate: scanned.nextReadingDate,
+      });
+      billCal.month = null;
+    }
     if (Object.keys(components).length) {
       const check = reconcileBill(amountCentavos, components);
       ctx.toast(check.balanced
@@ -883,45 +1216,7 @@ export const personalActions = {
     if (!scannerState || !scannerState.canvas) {
       throw new Error("Scan or upload a label photo first.");
     }
-    const root = document.querySelector("#content");
-    const progressArea = root.querySelector("#scannerProgressArea");
-    const progressFill = root.querySelector("#scannerProgressFill");
-    const progressText = root.querySelector("#scannerProgressText");
-    if (progressArea) {
-      progressArea.style.display = "";
-      if (progressFill) progressFill.style.width = "50%";
-      if (progressText) progressText.textContent = "Analyzing image with Gemini Vision…";
-    }
-
-    try {
-      const dataUrl = scannerState.canvas.toDataURL("image/jpeg", 0.9);
-      const base64 = dataUrl.split(",")[1];
-      const result = await apiPost("/api/ai/appliance-label", { image_base64: base64, mime_type: "image/jpeg" });
-
-      const form = root.querySelector('[data-form="appliance-save"]');
-      if (form) {
-        if (result.brand && !form.elements.brand.value) form.elements.brand.value = result.brand;
-        if (result.model && !form.elements.model.value) form.elements.model.value = result.model;
-        if (result.appliance_type && !form.elements.name.value) form.elements.name.value = result.appliance_type;
-        if (result.watts !== null && result.watts > 0) form.elements.watts.value = result.watts;
-        if (result.voltage) form.elements.voltage.value = result.voltage;
-        if (result.tested_kwh_month) form.elements.testedKwhMonth.value = result.tested_kwh_month;
-        form.elements.source.value = "ai";
-      }
-
-      fill(root, "wattage-status", `
-        ${notice("info", `✨ <b>Gemini Vision Analysis:</b><br>${ctx.escape(result.evidence || "Specification detected.")} ${result.notes ? `<br><small>${ctx.escape(result.notes)}</small>` : ""}`)}
-        ${result.tested_kwh_month ? `<div class="tested-energy-card">💡 Manufacturer Tested Energy: <b>${result.tested_kwh_month} kWh/month</b></div>` : ""}
-      `);
-
-      updateLiveEstimate(root);
-      ctx.toast("AI analysis complete! Please review and confirm before saving.");
-    } catch (error) {
-      ctx.toast(errorMessage(error));
-    } finally {
-      if (progressArea) progressArea.style.display = "none";
-      ctx.translate(root);
-    }
+    await identifyApplianceWithAi(ctx, document.querySelector("#content"), { auto: false });
   },
   async "appliance-delete"(button, ctx) {
     await deleteAppliance(decodeURIComponent(button.dataset.id));
@@ -991,53 +1286,358 @@ export const personalActions = {
   },
 };
 
-export async function handlePersonalBillOcr(input, ctx) {
-  const file = input.files?.[0];
-  if (!file) return;
-  const root = document.querySelector("#content");
-  fill(root, "ocr-status", "Reading image in your browser…");
-  try {
-    const text = await recognizeImage(file);
-    const suggestion = extractBillFields(text);
-    const form = root.querySelector('[data-form="bill-save"]');
-    const set = (name, value) => { if (value !== null && value !== undefined && form.elements[name]) form.elements[name].value = value; };
-    set("kwh", suggestion.kwh);
-    set("amount", suggestion.amountPesos);
-    set("periodStart", suggestion.periodStart);
-    set("periodEnd", suggestion.periodEnd);
-    set("previousReading", suggestion.previousReading);
-    set("presentReading", suggestion.presentReading);
-    for (const [category, centavos] of Object.entries(suggestion.components)) set(`component:${category}`, (centavos / 100).toFixed(2));
-    if (Object.keys(suggestion.components).length) form.querySelector(".charge-breakdown")?.setAttribute("open", "");
-    const found = ["kwh", "amountPesos", "periodStart", "periodEnd"].filter((key) => suggestion[key] !== null);
-    if (found.length) form.elements.source.value = "ocr";
-    const missing = [["kwh", "kWh"], ["amountPesos", "total charges"], ["periodStart", "billing period"]].filter(([key]) => suggestion[key] === null).map(([, label]) => label);
-    fill(root, "ocr-status", found.length
-      ? `Suggested values filled in${missing.length ? `; could not read: ${missing.join(", ")}` : ""}. Check every value against your bill.`
-      : "Could not find billing figures. Enter the values manually.");
-    // Show only a redacted transcript for review; the raw text is discarded with this function.
-    fill(root, "ocr-review", `<details class="raw-ocr-drawer"><summary>View recognized text (personal details redacted)</summary><pre translate="no">${ctx.escape(redactBillText(text))}</pre></details>`);
-  } catch (error) {
-    fill(root, "ocr-status", `${ctx.escape(errorMessage(error))} You can still enter the values manually.`);
-  } finally {
-    input.value = "";
-    ctx.translate(root);
-  }
+// ---------------------------------------------------------------- bill scanner wizard (Front → Back → Scan)
+// Same flow as the jrmph Meralco scanner: up to 3 shots of the FRONT (required) and
+// BACK (optional) of the bill, quality badges, then one scan that merges every shot.
+const MAX_SHOTS = 3;
+const billScan = { step: 1, shots: { front: [], back: [] }, busy: false, result: null };
+let shotSeq = 0;
+
+const pesoValue = (n) => (n == null ? "—" : `₱${Number(n).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+const niceDate = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
+};
+
+function shotHtml(side, s, i) {
+  const badge = s.checking
+    ? `<span class="scan-q scan-q-wait" title="Checking quality…">…</span>`
+    : s.warnings.length
+      ? `<span class="scan-q scan-q-bad" title="${escapeHtml(s.warnings.join(" "))}">⚠</span>`
+      : s.url ? `<span class="scan-q scan-q-ok" title="Looks good">✓</span>` : "";
+  return `<div class="scan-shot">
+    ${s.url ? `<img src="${s.url}" alt="${side} ${i + 1}">` : `<div class="scan-pdf"><span>📄</span><b>${user(s.file.name)}</b></div>`}
+    <span class="scan-shot-n">${i + 1}</span>${badge}
+    <button type="button" class="scan-shot-x" data-act="scan-remove" data-side="${side}" data-id="${s.id}" aria-label="Remove shot ${i + 1}">✕</button>
+    ${s.url ? `<button type="button" class="scan-shot-crop" data-act="scan-crop" data-side="${side}" data-id="${s.id}" aria-label="Crop shot ${i + 1}">✂ Crop</button>` : ""}
+  </div>`;
 }
+
+function pickerButtons(side) {
+  const full = billScan.shots[side].length >= MAX_SHOTS;
+  if (full) return `<p class="muted-note">Maximum of ${MAX_SHOTS} shots for this side.</p>`;
+  return `<div class="scan-actions">
+    <button type="button" class="btn btn-primary" data-act="scan-camera" data-side="${side}">📷 ${billScan.shots[side].length ? "Take more photos" : "Scan with camera"}</button>
+    <label class="btn btn-outline">⬆ Upload photo or PDF
+      <input type="file" accept="image/*,application/pdf,.pdf" multiple class="sr-only" data-ocr="personal-bill" data-side="${side}"></label>
+  </div>`;
+}
+
+function sidePane(side) {
+  const shots = billScan.shots[side];
+  const front = side === "front";
+  const warnings = shots.flatMap((s) => s.warnings);
+  return `
+    <h4 class="scan-title">${front ? "Front of the bill" : "Back of the bill <small>(optional)</small>"}</h4>
+    <p class="muted-note">${front
+      ? "The page with your billing period, meter readings, and charges. Lay the bill flat in good light — or upload the Meralco PDF e-bill (read exactly, no camera needed)."
+      : "The page with “What you’ve paid” and “How your bill was computed”. Skip this if you uploaded a 2-page PDF e-bill."}</p>
+    <div class="scan-dz${shots.length ? " has" : ""}">
+      ${shots.length
+        ? `<div class="scan-gallery">${shots.map((s, i) => shotHtml(side, s, i)).join("")}</div>`
+        : `<div class="scan-dz-empty"><div class="scan-dz-icon">🧾</div><b>${front ? "Front page" : "Back page"}</b><span>Up to ${MAX_SHOTS} photos, or one PDF</span></div>`}
+    </div>
+    ${warnings.length ? `<ul class="scan-warnings">${[...new Set(warnings)].map((w) => `<li>⚠ ${user(w)}</li>`).join("")}</ul>` : ""}
+    ${pickerButtons(side)}`;
+}
+
+function stepper() {
+  const labels = ["Front page", "Back page", "Scan"];
+  return `<ol class="scan-stepper">${labels.map((label, i) => {
+    const n = i + 1;
+    const state = billScan.step === n ? "now" : billScan.step > n ? "done" : "";
+    return `<li class="${state}"><span>${billScan.step > n ? "✓" : n}</span>${label}</li>`;
+  }).join("")}</ol>`;
+}
+
+function resultsHtml() {
+  const { bill, back, checks, method, confidence, warnings } = billScan.result;
+  const how = method === "pdf-text" ? "PDF e-bill (exact text)" : method === "pdf-ocr" ? "scanned PDF (OCR)" : `photo OCR${confidence != null ? ` · ${confidence}% confidence` : ""}`;
+  const okCount = checks.filter((c) => c.ok).length;
+  const stat = (label, value, sub = "") => `<div class="scan-stat"><span>${label}</span><b>${value}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
+  const backHtml = back && (back.payments.length || back.rateRows.length)
+    ? `<details class="scan-back"><summary>Back page · ${back.payments.length} payment${back.payments.length === 1 ? "" : "s"}, ${back.rateRows.length} rate line${back.rateRows.length === 1 ? "" : "s"}</summary>
+        ${back.payments.length ? `<p class="muted-note"><b>What you’ve paid</b></p><ul class="scan-list">${back.payments.map((p) => `<li><span>${niceDate(p.date)}</span><b>${pesoValue(p.amount)}</b></li>`).join("")}</ul>` : ""}
+        ${back.rateRows.length ? `<p class="muted-note"><b>How your bill was computed</b></p><ul class="scan-list">${back.rateRows.map((r) => `<li><span>${user(r.component)}${r.basisKwh ? ` · ${r.basisKwh} kWh` : ""} × ${r.rate}</span><b>${pesoValue(r.amount)}</b></li>`).join("")}</ul>` : ""}
+      </details>`
+    : "";
+  return `
+    <div class="scan-results">
+      <div class="scan-results-head"><b>Scan results</b><span class="muted-note">Read from ${how}</span></div>
+      <div class="scan-stats">
+        ${stat("Total amount due", pesoValue(bill.totals.totalAmountDue), bill.totals.previousBalance ? `incl. ${pesoValue(bill.totals.previousBalance)} previous balance` : "")}
+        ${stat("Due date", niceDate(bill.billing.dueDate))}
+        ${stat("Consumption", bill.reading.kwh != null ? `${bill.reading.kwh} kWh` : "—", bill.reading.ratePerKwh ? `₱${bill.reading.ratePerKwh}/kWh` : "")}
+        ${stat("Billing period", niceDate(bill.billing.periodEnd), bill.billing.periodStart ? `from ${niceDate(bill.billing.periodStart)}` : "")}
+      </div>
+      <div class="scan-checks">
+        <p class="muted-note"><b>Checks · ${okCount}/${checks.length} passed</b>${okCount < checks.length ? " — fix the ⚠ values in the form below" : ""}</p>
+        <ul>${warnings.map((w) => `<li class="scan-bad">⚠ ${user(w)}</li>`).join("")}${checks.map((c) => `<li class="${c.ok ? "scan-ok" : "scan-bad"}"><b>${c.ok ? "✓" : "⚠"} ${user(c.label)}</b> — ${user(c.detail)}</li>`).join("")}</ul>
+      </div>
+      ${backHtml}
+      <div class="scan-nav"><span class="muted-note">Values are filled into the form below — check them, then save. ${bill.billing.dueDate ? "📅 The due date and next reading go on your Bill calendar when you save." : ""}</span><button type="button" class="btn btn-outline" data-act="scan-reset">＋ Scan another bill</button></div>
+    </div>`;
+}
+
+function billScannerHtml() {
+  if (billScan.step === 4 && billScan.result) return resultsHtml();
+  const { front, back } = billScan.shots;
+  let body;
+  if (billScan.step === 3) {
+    const thumbs = (side) => `<div class="scan-thumb">
+      <span class="scan-thumb-label">${side === "front" ? "Front" : "Back"} · ${billScan.shots[side].length} shot${billScan.shots[side].length === 1 ? "" : "s"}</span>
+      ${billScan.shots[side].length
+        ? `<div class="scan-mini-row">${billScan.shots[side].map((s) => (s.url ? `<img src="${s.url}" alt="">` : `<span class="scan-mini-pdf">📄</span>`)).join("")}</div>`
+        : `<div class="scan-thumb-empty">None</div>`}
+      <button type="button" class="text-link" data-act="scan-step" data-step="${side === "front" ? 1 : 2}">${billScan.shots[side].length ? "Change" : "Add"}</button>
+    </div>`;
+    body = `
+      <h4 class="scan-title">Ready to scan</h4>
+      <div class="scan-thumbs">${thumbs("front")}${thumbs("back")}</div>
+      <p class="muted-note">🔒 Read on this device only — nothing is uploaded. Takes about 20–60 seconds for photos; PDFs are instant.</p>
+      <div class="scan-nav">
+        <button type="button" class="text-link" data-act="scan-step" data-step="2">← Back</button>
+        <button type="button" class="btn btn-primary" data-act="scan-run" ${front.length && !billScan.busy ? "" : "disabled"}>${billScan.busy ? "Scanning…" : "✨ Start scan"}</button>
+      </div>
+      <div class="scan-progress" ${billScan.busy ? "" : "hidden"}><div class="scan-progress-bar"><span data-scan-bar></span></div><p class="muted-note" data-scan-stage>Starting…</p></div>`;
+  } else {
+    const side = billScan.step === 1 ? "front" : "back";
+    body = `${sidePane(side)}
+      <div class="scan-nav">
+        ${side === "back" ? `<button type="button" class="text-link" data-act="scan-step" data-step="1">← Back</button>` : "<span></span>"}
+        <div class="scan-nav-r">
+          ${side === "back" && !back.length ? `<button type="button" class="btn btn-outline" data-act="scan-step" data-step="3">Skip</button>` : ""}
+          <button type="button" class="btn btn-primary" data-act="scan-step" data-step="${billScan.step + 1}" ${front.length ? "" : "disabled"}>Next →</button>
+        </div>
+      </div>`;
+  }
+  return `<div class="bill-scanner">${stepper()}${body}</div>`;
+}
+
+function renderBillScanner(root = document.querySelector("#content")) {
+  if (root?.querySelector('[data-slot="bill-scanner"]')) fill(root, "bill-scanner", billScannerHtml());
+}
+
+function applyScanToForm(root, scan) {
+  const generic = extractBillFields(scan.text);
+  const b = scan.bill;
+  const scannedComponents = toDashboardComponents(b.charges);
+  const suggestion = {
+    kwh: b.reading.kwh ?? generic.kwh,
+    amountPesos: b.totals.chargesThisPeriod != null ? b.totals.chargesThisPeriod.toFixed(2) : generic.amountPesos,
+    periodStart: b.billing.periodStart ?? generic.periodStart,
+    periodEnd: b.billing.periodEnd ?? generic.periodEnd,
+    previousReading: b.reading.previous ?? generic.previousReading,
+    presentReading: b.reading.current ?? generic.presentReading,
+    components: Object.keys(scannedComponents).length ? scannedComponents : generic.components,
+  };
+  const form = root.querySelector('[data-form="bill-save"]');
+  if (!form) return suggestion;
+  const set = (name, value) => { if (value !== null && value !== undefined && form.elements[name]) form.elements[name].value = value; };
+  set("kwh", suggestion.kwh);
+  set("amount", suggestion.amountPesos);
+  set("periodStart", suggestion.periodStart);
+  set("periodEnd", suggestion.periodEnd);
+  set("previousReading", suggestion.previousReading);
+  set("presentReading", suggestion.presentReading);
+  for (const [category, centavos] of Object.entries(suggestion.components)) set(`component:${category}`, (centavos / 100).toFixed(2));
+  if (Object.keys(suggestion.components).length) form.querySelector(".charge-breakdown")?.setAttribute("open", "");
+  if (["kwh", "amountPesos", "periodStart", "periodEnd"].some((key) => suggestion[key] !== null)) form.elements.source.value = "ocr";
+  return suggestion;
+}
+
+export const billScannerActions = {
+  "scan-step"(button, ctx) {
+    const step = Number(button.dataset.step);
+    if (step > 1 && !billScan.shots.front.length) return;
+    billScan.step = Math.min(3, Math.max(1, step));
+    renderBillScanner();
+    ctx.translate?.(document.querySelector("#content"));
+  },
+  "scan-remove"(button, ctx) {
+    const list = billScan.shots[button.dataset.side];
+    const i = list.findIndex((s) => s.id === button.dataset.id);
+    if (i >= 0) {
+      if (list[i].url) URL.revokeObjectURL(list[i].url);
+      list.splice(i, 1);
+    }
+    renderBillScanner();
+    ctx.translate?.(document.querySelector("#content"));
+  },
+  "scan-reset"(_button, ctx) {
+    for (const s of [...billScan.shots.front, ...billScan.shots.back]) if (s.url) URL.revokeObjectURL(s.url);
+    Object.assign(billScan, { step: 1, shots: { front: [], back: [] }, busy: false, result: null });
+    const root = document.querySelector("#content");
+    renderBillScanner(root);
+    fill(root, "ocr-status", "");
+    fill(root, "ocr-review", "");
+    ctx.translate?.(root);
+  },
+  async "scan-run"(_button, ctx) {
+    if (billScan.busy || !billScan.shots.front.length) return;
+    const root = document.querySelector("#content");
+    billScan.busy = true;
+    renderBillScanner(root);
+    const progress = (side, stage, pct) => {
+      const bar = root.querySelector("[data-scan-bar]");
+      const label = root.querySelector("[data-scan-stage]");
+      if (bar) bar.style.width = `${Math.round((pct ?? 0) * 100)}%`;
+      if (label) label.textContent = `${side}: ${stage}${pct != null ? ` ${Math.round(pct * 100)}%` : ""}`;
+    };
+    try {
+      const scan = await scanMeralcoBillPages(
+        { front: billScan.shots.front.map((s) => s.file), back: billScan.shots.back.map((s) => s.file) },
+        progress,
+      );
+      billScan.result = scan;
+      billScan.step = 4;
+      const suggestion = applyScanToForm(root, scan);
+      const missing = [["kwh", "kWh"], ["amountPesos", "total charges"], ["periodStart", "billing period"]].filter(([key]) => suggestion[key] === null).map(([, label]) => label);
+      fill(root, "ocr-status", missing.length ? `Could not read: ${missing.join(", ")}. Type those in below.` : "");
+      // Only a redacted transcript is shown; the raw text is discarded.
+      fill(root, "ocr-review", `<details class="raw-ocr-drawer"><summary>View recognized text (personal details redacted)</summary><pre translate="no">${ctx.escape(redactBillText(scan.text))}</pre></details>`);
+    } catch (error) {
+      fill(root, "ocr-status", `${ctx.escape(errorMessage(error))} You can still enter the values manually.`);
+    } finally {
+      billScan.busy = false;
+      renderBillScanner(root);
+      ctx.translate?.(root);
+    }
+  },
+};
+
+Object.assign(billScannerActions, {
+  /** Live camera scanner with quality guide + crop. Starting on an empty Front page runs the
+   *  guided flow from the jrmph scanner: Front → Back (or skip) → scan automatically. */
+  async "scan-camera"(button, ctx) {
+    const side = button.dataset.side === "back" ? "back" : "front";
+    const guided = side === "front" && !billScan.shots.front.length;
+    const shoot = (which) => openBillCamera({
+      title: which === "front" ? "Front of the bill" : "Back of the bill",
+      hint: which === "front" ? `Up to ${MAX_SHOTS} photos${guided ? ", then the back page" : ""}` : `Up to ${MAX_SHOTS} photos${guided ? ", then it scans automatically" : ""}`,
+      room: MAX_SHOTS - billScan.shots[which].length,
+      nextLabel: which === "front" && guided ? "Next ➜ Back" : "Done ✓",
+      onSkip: which === "back" ? () => undefined : undefined,
+    });
+    const files = await shoot(side);
+    addShots(side, files, ctx);
+    if (!guided || !files.length) return;
+    billScan.step = 2;
+    renderBillScanner();
+    addShots("back", await shoot("back"), ctx);
+    billScan.step = 3;
+    renderBillScanner();
+    await billScannerActions["scan-run"](button, ctx);
+  },
+  /** Re-crop a photo that is already in the list (e.g. an uploaded one). */
+  async "scan-crop"(button, ctx) {
+    const shot = billScan.shots[button.dataset.side]?.find((s) => s.id === button.dataset.id);
+    if (!shot) return;
+    const cropped = await openCropEditor(shot.file, { title: "Crop the bill", allowSkip: false });
+    if (!cropped) return;
+    URL.revokeObjectURL(shot.url);
+    Object.assign(shot, { file: cropped, url: URL.createObjectURL(cropped), warnings: [], checking: true });
+    renderBillScanner();
+    photoQuality(cropped).then((w) => { shot.warnings = w; }).catch(() => undefined).finally(() => { shot.checking = false; renderBillScanner(); ctx.translate?.(document.querySelector("#content")); });
+  },
+});
+
+function addShots(side, files, ctx) {
+  const list = billScan.shots[side];
+  for (const file of files) {
+    if (list.length >= MAX_SHOTS) break;
+    const isImage = file.type.startsWith("image/");
+    const isPdfFile = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+    if (!isImage && !isPdfFile) { ctx.toast?.(`"${file.name}" is not a photo or PDF.`); continue; }
+    const shot = { id: `s${++shotSeq}`, file, url: isImage ? URL.createObjectURL(file) : null, warnings: [], checking: isImage };
+    list.push(shot);
+    if (isImage) {
+      photoQuality(file)
+        .then((w) => { shot.warnings = w; })
+        .catch(() => undefined)
+        .finally(() => { shot.checking = false; renderBillScanner(); });
+    }
+  }
+  renderBillScanner();
+  ctx.translate?.(document.querySelector("#content"));
+}
+
+/** Photo/PDF chosen with "Upload": add it to the Front or Back shots. */
+export async function handlePersonalBillOcr(input, ctx) {
+  const side = input.dataset.side === "back" ? "back" : "front";
+  const files = [...(input.files ?? [])];
+  input.value = "";
+  if (files.length) addShots(side, files, ctx);
+}
+
+// Register the wizard actions with the other personal actions (dispatched by app.js).
+Object.assign(personalActions, billScannerActions, billCalendarActions);
 
 export async function handleApplianceLabelScan(input, ctx) {
   const file = input.files?.[0];
-  if (!file) return;
+  input.value = "";
+  if (file) await startApplianceScan(file, ctx);
+}
 
+// "📷 Scan Appliance Label": Lens-style live camera → crop → scan with highlighted results.
+Object.assign(personalActions, {
+  async "appliance-camera"(_button, ctx) {
+    const [file] = await openBillCamera({
+      title: "Scan appliance label",
+      hint: "Fit the rating plate or energy label inside the frame",
+      room: 1,
+      nextLabel: "Scan ✓",
+      variant: "lens",
+    });
+    if (file) await startApplianceScan(file, ctx);
+  },
+  "preset-use"(button) {
+    applyPresetWatts(button);
+  },
+  /** Register an appliance straight from the catalog with its typical wattage. */
+  async "catalog-add"(button, ctx) {
+    const preset = ALL_APPLIANCES[Number(button.dataset.index)];
+    if (!preset) return;
+    await saveAppliance({
+      name: preset.name.slice(0, 60),
+      category: preset.category,
+      watts: preset.typicalWatts,
+      quantity: 1,
+      hoursPerDay: preset.hoursPerDay,
+      daysPerWeek: 7,
+      scheduleNote: "Typical value — edit to match your label",
+      brand: null,
+      model: null,
+      voltage: null,
+      source: "manual",
+      testedKwhMonth: null,
+      energyEfficiencyRating: null,
+      labelType: null,
+      consumptionBasis: "wattage",
+    });
+    ctx.toast(`${preset.name} added with ${fmtW(preset.typicalWatts)} (typical). Edit it to match your label.`);
+    window.dispatchEvent(new CustomEvent("smartwatts-appliance-saved", { detail: preset.name }));
+    ctx.render();
+  },
+  "lens-focus"(button) {
+    const field = document.querySelector(`[data-form="appliance-save"] [name="${button.dataset.field}"]`);
+    if (!field) return;
+    field.scrollIntoView({ behavior: "smooth", block: "center" });
+    field.focus({ preventScroll: true });
+    field.classList.add("lens-flash");
+    setTimeout(() => field.classList.remove("lens-flash"), 1200);
+  },
+});
+
+async function startApplianceScan(file, ctx) {
   const root = document.querySelector("#content");
   if (!file.type.startsWith("image/")) {
     ctx.toast("Please choose an image file (PNG, JPG, WebP), or enter details manually.");
-    input.value = "";
     return;
   }
   if (file.size > 15 * 1024 * 1024) {
     ctx.toast("Image file is too large (maximum 15 MB).");
-    input.value = "";
     return;
   }
 
@@ -1077,8 +1677,6 @@ export async function handleApplianceLabelScan(input, ctx) {
     await runApplianceOcr(ctx, root);
   } catch (error) {
     ctx.toast(errorMessage(error));
-  } finally {
-    input.value = "";
   }
 }
 

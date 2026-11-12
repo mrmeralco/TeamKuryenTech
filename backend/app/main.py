@@ -83,6 +83,10 @@ class ApplianceVisionResponse(BaseModel):
     evidence: str | None = None
     confidence: str = "medium"
     notes: str | None = None
+    # "label" when read from a printed label, "object" when recognized from the appliance itself.
+    identified_from: str | None = None
+    # Visible size/variant that changes typical wattage, e.g. "16-inch stand fan", "55-inch TV", "1.5 HP".
+    size_hint: str | None = None
 
 
 class TranslationRequest(BaseModel):
@@ -277,13 +281,17 @@ async def analyze_appliance_label(request: ApplianceVisionRequest, _user: AuthUs
         b64_data = b64_data.split(",", 1)[1]
 
     prompt_text = (
-        "Analyze this appliance specification rating label or energy efficiency guide image.\n"
-        "Extract only what is visibly printed on the label. Never invent missing specifications.\n"
+        "Analyze this photo. It is either an appliance rating label / energy efficiency guide, or a photo of the appliance itself (no label).\n"
+        "Specifications (watts, voltage, kWh, EER, model) must come only from visibly printed text. Never invent missing specifications.\n"
+        "The appliance TYPE, however, should always be identified from what the object looks like, even when nothing is printed.\n"
         "Return a valid JSON object with the following fields:\n"
         "- label_type: 'ELECTRICAL_SPECIFICATION' | 'ENERGY_EFFICIENCY' | 'MIXED' | 'UNKNOWN'\n"
-        "- brand: string or null (brand name, only if printed)\n"
+        "- brand: string or null (brand name, only if printed or a clearly visible logo)\n"
         "- model: string or null (model number/code)\n"
-        "- appliance_type: string or null (e.g. 'Air Conditioner', 'Refrigerator', 'Washing Machine', 'Fan', 'Microwave')\n"
+        "- appliance_type: string or null. A common household name such as 'Electric fan', 'Ceiling fan', 'Air conditioner', 'Refrigerator', "
+        "'Washing machine', 'Rice cooker', 'Electric kettle', 'Microwave', 'LED TV', 'Laptop', 'Clothes iron'. Identify it from the object even with no label.\n"
+        "- identified_from: 'label' if the type/specs came from printed text, 'object' if recognized from the appliance's appearance\n"
+        "- size_hint: string or null (visible size/variant that affects power, e.g. '16-inch stand fan', '55-inch TV', 'two-door refrigerator', 'window type aircon')\n"
         "- watts: number in watts (e.g. 65 for 65W, 500 for 0.5kW) or null. Must be electrical input wattage, NOT cooling capacity BTU/h and NOT motor horsepower HP.\n"
         "- voltage: string or null (e.g. '220V', '230V')\n"
         "- frequency: string or null (e.g. '60Hz')\n"
@@ -417,7 +425,9 @@ async def analyze_appliance_label(request: ApplianceVisionRequest, _user: AuthUs
     return ApplianceVisionResponse(
         brand=str(data["brand"]).strip() if data.get("brand") else None,
         model=str(data["model"]).strip() if data.get("model") else None,
-        appliance_type=str(data["appliance_type"]).strip() if data.get("appliance_type") else None,
+        appliance_type=str(data["appliance_type"]).strip()[:60] if data.get("appliance_type") else None,
+        identified_from="object" if str(data.get("identified_from", "")).lower() == "object" else ("label" if data.get("identified_from") else None),
+        size_hint=str(data["size_hint"]).strip()[:60] if data.get("size_hint") else None,
         watts=validated_watts,
         voltage=str(data["voltage"]).strip() if data.get("voltage") else None,
         frequency=str(data["frequency"]).strip() if data.get("frequency") else None,
