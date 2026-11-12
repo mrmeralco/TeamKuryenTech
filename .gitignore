@@ -4,7 +4,8 @@ coverage/
 playwright-report/
 test-results/
 .env
-.env.local
+.env.*
+!.env.example
 backend/.venv/
 backend/__pycache__/
 backend/.pytest_cache/
@@ -13,5 +14,6 @@ backend/.pytest_cache/
 firebase-adminsdk-*.json
 *-debug.log
 .firebase/
+.vercel/
 backend/data/
 dev-dist/

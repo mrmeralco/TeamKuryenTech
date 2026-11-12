@@ -11,6 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 load_dotenv()
 
+from .security.settings import load_security_settings  # noqa: E402
+
+# Validated before anything else: production refuses to start with missing or weak secrets.
+SECURITY = load_security_settings()
+
 from .auth import AuthUser, require_user  # noqa: E402
 from .advisor import AdvisorContext, compute_facts, deterministic_summary, system_prompt, unverified_figures  # noqa: E402
 from .rentals.router import router as rentals_router  # noqa: E402
@@ -109,10 +114,13 @@ class TranslationResponse(BaseModel):
 
 
 app = FastAPI(title="SmartWatts API", version="2.0.0")
+# Cross-origin access is only for local development (the Vite dev server). In production the site and the API
+# share one origin, so no CORS origins are allowed unless ALLOWED_ORIGINS lists them explicitly.
+_DEV_ORIGINS = "" if SECURITY.production else "http://localhost:5173,http://127.0.0.1:5173"
 allowed_origins = [
     origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
-    if origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", _DEV_ORIGINS).split(",")
+    if origin.strip() and origin.strip() != "*"
 ]
 app.add_middleware(
     CORSMiddleware,
