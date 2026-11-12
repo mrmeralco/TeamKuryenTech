@@ -131,4 +131,152 @@ export function welcomeEmail({ name, appUrl }) {
   };
 }
 
-export const templates = { verification: verificationEmail, "password-reset": passwordResetEmail, welcome: welcomeEmail };
+/** Electricity Bill Saved Confirmation */
+export function billSavedEmail({
+  name,
+  periodStart = "",
+  periodEnd = "",
+  amountPesos = null,
+  kwh = null,
+  dueDate = null,
+  saveDate = "",
+  appUrl,
+  workspaceType = "Personal",
+  propertyName = "",
+}) {
+  const hi = firstName(name) ? `Hi ${esc(firstName(name))},` : "Hi there,";
+  const periodText = periodStart && periodEnd ? `${esc(periodStart)} to ${esc(periodEnd)}` : "Recorded billing period";
+  const scopeText = propertyName ? `SmartWatts Rentals · ${esc(propertyName)}` : `SmartWatts ${esc(workspaceType)}`;
+
+  const detailRow = (label, val) => `<tr>
+    <td style="padding:10px 0;border-top:1px solid #EEECE7;font-family:${FONT};font-size:13px;color:#706E6B">${esc(label)}</td>
+    <td align="right" style="padding:10px 0;border-top:1px solid #EEECE7;font-family:${HEAD};font-size:14px;font-weight:700;color:#0E0E0E">${esc(val)}</td>
+  </tr>`;
+
+  const body = `
+    <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:#FFF4E8;font-size:12px;font-weight:700;letter-spacing:.08em;color:#B85400">${scopeText.toUpperCase()}</div>
+    <h1 style="margin:16px 0 10px;font-family:${HEAD};font-size:28px;line-height:1.15;font-weight:800;letter-spacing:-.03em">Bill Saved Confirmation</h1>
+    <p style="margin:0 0 18px;font-size:15px;line-height:1.6;color:#3D3D3A">${hi}<br>Your electricity bill has been successfully saved to your SmartWatts account.</p>
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;background:#FBFBFA;border:1px solid #E6E3DD;border-radius:16px;padding:6px 18px">
+      ${detailRow("Billing Period", periodText)}
+      ${amountPesos !== null && amountPesos !== undefined ? detailRow("Recorded Amount Due", `₱${Number(amountPesos).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`) : ""}
+      ${kwh !== null && kwh !== undefined ? detailRow("Recorded Billed Usage", `${Number(kwh).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} kWh`) : ""}
+      ${dueDate ? detailRow("Recorded Due Date", dueDate) : ""}
+      ${saveDate ? detailRow("Save Date", saveDate) : ""}
+    </table>
+
+    ${button(`${appUrl}/dashboard#bills`, "View in Bill History →")}
+    ${notice("&#9432; <b style=\"color:#0E0E0E\">Self-reported information.</b> These entries reflect the figures saved in your account. SmartWatts does not independently verify them with your utility provider.")}`;
+
+  return {
+    subject: `Electricity Bill Saved (${periodText}) — SmartWatts`,
+    text: `${hi}\n\nYour electricity bill for ${periodText} has been saved to your SmartWatts account.\n\n` +
+      (amountPesos !== null && amountPesos !== undefined ? `Recorded Amount: ₱${Number(amountPesos).toFixed(2)}\n` : "") +
+      (kwh !== null && kwh !== undefined ? `Recorded Usage: ${Number(kwh).toFixed(1)} kWh\n` : "") +
+      (dueDate ? `Due Date: ${dueDate}\n` : "") +
+      `\nView your bill history: ${appUrl}/dashboard#bills\n\n— SmartWatts`,
+    html: layout({ preheader: `Electricity bill saved for ${periodText}.`, title: "Bill Saved Confirmation", body, appUrl }),
+  };
+}
+
+/** Electricity Bill Due Reminder */
+export function billDueReminderEmail({
+  name,
+  periodStart = "",
+  periodEnd = "",
+  amountPesos = null,
+  kwh = null,
+  dueDate = "",
+  daysText = "soon",
+  appUrl,
+  workspaceType = "Personal",
+  propertyName = "",
+}) {
+  const hi = firstName(name) ? `Hi ${esc(firstName(name))},` : "Hi there,";
+  const periodText = periodStart && periodEnd ? `${esc(periodStart)} to ${esc(periodEnd)}` : "Recorded billing period";
+  const scopeText = propertyName ? `SmartWatts Rentals · ${esc(propertyName)}` : `SmartWatts ${esc(workspaceType)}`;
+
+  const detailRow = (label, val) => `<tr>
+    <td style="padding:10px 0;border-top:1px solid #EEECE7;font-family:${FONT};font-size:13px;color:#706E6B">${esc(label)}</td>
+    <td align="right" style="padding:10px 0;border-top:1px solid #EEECE7;font-family:${HEAD};font-size:14px;font-weight:700;color:#0E0E0E">${esc(val)}</td>
+  </tr>`;
+
+  const body = `
+    <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:#FFF4E8;font-size:12px;font-weight:700;letter-spacing:.08em;color:#B85400">${scopeText.toUpperCase()}</div>
+    <h1 style="margin:16px 0 10px;font-family:${HEAD};font-size:28px;line-height:1.15;font-weight:800;letter-spacing:-.03em">Upcoming Bill Due Date</h1>
+    <p style="margin:0 0 18px;font-size:15px;line-height:1.6;color:#3D3D3A">${hi}<br>A saved electricity bill in your SmartWatts account has a due date <b style="color:#0E0E0E">${esc(daysText)}</b>.</p>
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;background:#FBFBFA;border:1px solid #E6E3DD;border-radius:16px;padding:6px 18px">
+      ${dueDate ? detailRow("Due Date", dueDate) : ""}
+      ${detailRow("Billing Period", periodText)}
+      ${amountPesos !== null && amountPesos !== undefined ? detailRow("Recorded Amount Due", `₱${Number(amountPesos).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`) : ""}
+      ${kwh !== null && kwh !== undefined ? detailRow("Recorded Billed Usage", `${Number(kwh).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} kWh`) : ""}
+    </table>
+
+    ${button(`${appUrl}/dashboard#bills`, "Review Saved Bill →")}
+    ${notice("&#9432; <b style=\"color:#0E0E0E\">Already settled?</b> SmartWatts does not process bill payments. If you have already paid this bill, you can safely ignore this reminder or update your bill notes.")}`;
+
+  return {
+    subject: `Reminder: Electricity Bill Due ${daysText === "today" ? "Today" : `in ${daysText}`} (${dueDate || periodText}) — SmartWatts`,
+    text: `${hi}\n\nYour saved electricity bill has a due date ${daysText} (${dueDate || periodText}).\n\n` +
+      (amountPesos !== null && amountPesos !== undefined ? `Recorded Amount: ₱${Number(amountPesos).toFixed(2)}\n` : "") +
+      (dueDate ? `Due Date: ${dueDate}\n` : "") +
+      `\nReview your bill: ${appUrl}/dashboard#bills\nIf you have already paid this bill, you may ignore this reminder.\n\n— SmartWatts`,
+    html: layout({ preheader: `Electricity bill due ${daysText} (${dueDate || periodText}).`, title: "Bill Due Reminder", body, appUrl }),
+  };
+}
+
+/** New Tenant Electricity Statement Ready */
+export function statementPublishedEmail({
+  name,
+  periodStart = "",
+  periodEnd = "",
+  amountPesos = null,
+  dueDate = null,
+  propertyName = "",
+  unitName = "",
+  appUrl,
+}) {
+  const hi = firstName(name) ? `Hi ${esc(firstName(name))},` : "Hi there,";
+  const periodText = periodStart && periodEnd ? `${esc(periodStart)} to ${esc(periodEnd)}` : "Statement period";
+
+  const detailRow = (label, val) => `<tr>
+    <td style="padding:10px 0;border-top:1px solid #EEECE7;font-family:${FONT};font-size:13px;color:#706E6B">${esc(label)}</td>
+    <td align="right" style="padding:10px 0;border-top:1px solid #EEECE7;font-family:${HEAD};font-size:14px;font-weight:700;color:#0E0E0E">${esc(val)}</td>
+  </tr>`;
+
+  const body = `
+    <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:#FFF4E8;font-size:12px;font-weight:700;letter-spacing:.08em;color:#B85400">SMARTWATTS RENTALS</div>
+    <h1 style="margin:16px 0 10px;font-family:${HEAD};font-size:28px;line-height:1.15;font-weight:800;letter-spacing:-.03em">New Electricity Statement</h1>
+    <p style="margin:0 0 18px;font-size:15px;line-height:1.6;color:#3D3D3A">${hi}<br>Your property manager has published your electricity statement for <b style="color:#0E0E0E">${esc(propertyName)}${unitName ? ` (${esc(unitName)})` : ""}</b>.</p>
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;background:#FBFBFA;border:1px solid #E6E3DD;border-radius:16px;padding:6px 18px">
+      ${propertyName ? detailRow("Property", propertyName) : ""}
+      ${unitName ? detailRow("Unit", unitName) : ""}
+      ${detailRow("Billing Period", periodText)}
+      ${amountPesos !== null && amountPesos !== undefined ? detailRow("Total Due", `₱${Number(amountPesos).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`) : ""}
+      ${dueDate ? detailRow("Due Date", dueDate) : ""}
+    </table>
+
+    ${button(`${appUrl}/dashboard#tenant-statements`, "View Statement →")}
+    ${notice("&#9432; <b style=\"color:#0E0E0E\">Official breakdown.</b> You can view the itemized submeter reading and official rate calculation in your SmartWatts tenant portal.")}`;
+
+  return {
+    subject: `New Electricity Statement for ${unitName || propertyName} (${periodText}) — SmartWatts`,
+    text: `${hi}\n\nYour electricity statement for ${propertyName}${unitName ? ` (${unitName})` : ""} (${periodText}) is ready.\n\n` +
+      (amountPesos !== null && amountPesos !== undefined ? `Total Due: ₱${Number(amountPesos).toFixed(2)}\n` : "") +
+      (dueDate ? `Due Date: ${dueDate}\n` : "") +
+      `\nView your statement: ${appUrl}/dashboard#tenant-statements\n\n— SmartWatts`,
+    html: layout({ preheader: `New electricity statement for ${propertyName}.`, title: "New Electricity Statement", body, appUrl }),
+  };
+}
+
+export const templates = {
+  verification: verificationEmail,
+  "password-reset": passwordResetEmail,
+  welcome: welcomeEmail,
+  "bill-saved": billSavedEmail,
+  "bill-due-reminder": billDueReminderEmail,
+  "statement-published": statementPublishedEmail,
+};

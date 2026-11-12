@@ -115,9 +115,17 @@ service cloud.firestore {
     // the current app reads and writes `preferredLanguage`.
     function validProfile() {
       let d = request.resource.data;
-      return onlyKeys(['displayName', 'language', 'preferredLanguage', 'dwellingType', 'utilityRecordType', 'baselineKwh', 'baselinePeriodEnd', 'createdAt', 'updatedAt'])
-        && (('displayName' in d) || ('language' in d) || ('preferredLanguage' in d) || ('dwellingType' in d) || ('utilityRecordType' in d) || ('baselineKwh' in d))
+      return onlyKeys(['displayName', 'firstName', 'lastName', 'phoneNumber', 'serviceProvider', 'serviceAddress', 'utilityAccountNumber', 'rateCategory', 'language', 'preferredLanguage', 'dwellingType', 'utilityRecordType', 'baselineKwh', 'baselinePeriodEnd', 'createdAt', 'updatedAt'])
+        && (('displayName' in d) || ('firstName' in d) || ('lastName' in d) || ('phoneNumber' in d) || ('serviceProvider' in d) || ('serviceAddress' in d) || ('utilityAccountNumber' in d) || ('rateCategory' in d) || ('language' in d) || ('preferredLanguage' in d) || ('dwellingType' in d) || ('utilityRecordType' in d) || ('baselineKwh' in d))
         && optionalText('displayName', 100)
+        && optionalText('firstName', 100)
+        && optionalText('lastName', 100)
+        && optionalText('phoneNumber', 32)
+        && (!('phoneNumber' in d) || d.phoneNumber == null || d.phoneNumber.matches('^[0-9+(). -]{7,32}$'))
+        && optionalText('serviceProvider', 80)
+        && optionalText('serviceAddress', 300)
+        && optionalText('utilityAccountNumber', 64)
+        && optionalText('rateCategory', 60)
         && optionalText('language', 20)
         && optionalText('preferredLanguage', 20)
         && (!('dwellingType' in d) || d.dwellingType in ['homeowner', 'condo_apartment'])

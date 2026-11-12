@@ -117,6 +117,10 @@ describe("User profile", () => {
     await assertSucceeds(setDoc(doc(alice, "users/alice"), {
       dwellingType: "condo_apartment", utilityRecordType: "condo_soa", baselineKwh: 235.5, baselinePeriodEnd: "2026-10-31",
     }, { merge: true }));
+    await assertSucceeds(setDoc(doc(alice, "users/alice"), {
+      firstName: "Alice", lastName: "Example", phoneNumber: "+63 917 123 4567", serviceProvider: "Meralco",
+      serviceAddress: "Private service address", utilityAccountNumber: "ACCOUNT-123", rateCategory: "Residential",
+    }, { merge: true }));
     await assertSucceeds(getDoc(doc(alice, "users/alice")));
     await assertSucceeds(setDoc(doc(alice, "users/alice"), { language: "en" }, { merge: true }));
     const bob = env.authenticatedContext("bob").firestore();
@@ -137,6 +141,8 @@ describe("User profile", () => {
     await assertFails(setDoc(doc(alice, "users/alice"), { dwellingType: "landlord" }));
     await assertFails(setDoc(doc(alice, "users/alice"), { baselineKwh: 200 }));
     await assertFails(setDoc(doc(alice, "users/alice"), { dwellingType: "homeowner", utilityRecordType: "condo_soa" }));
+    await assertFails(setDoc(doc(alice, "users/alice"), { phoneNumber: "not a phone number" }));
+    await assertFails(setDoc(doc(alice, "users/alice"), { serviceAddress: "x".repeat(301) }));
     await assertSucceeds(setDoc(doc(alice, "users/alice"), { preferredLanguage: "en" }));
     await assertFails(deleteDoc(doc(alice, "users/alice")));
   });

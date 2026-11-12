@@ -24,12 +24,24 @@ export interface CoinState {
   lastCheckIn: string | null;
   streak: number;
   claimedCycles: string[];
+  quests: { date: string | null; done: QuestId[] };
 }
+
+export type QuestId = "tip" | "forecast";
 
 export function addCalendarMonths(date: Date, months?: number): Date;
 export function addCoinBatch(amountCents: number, source: string, date?: Date, metadata?: Record<string, unknown>): CoinBatch;
 export function awardMonthlyReduction(currentKwh: number, previousKwh: number, cycleId: string): number;
 export function checkIn(source?: HTMLElement): boolean;
+export function claimTipQuest(): boolean;
+export function completeQuest(questId: QuestId | string): boolean;
+export function completedQuestsToday(state?: CoinState): QuestId[];
+export function forecastDailyCost(watts: number, hours: number, rateCentavos: number): { kwh: number; costCentavos: number };
+export function hydrateDailyQuests(): void;
+export function setActiveRate(rateCentavos: number | null): void;
+export function startTipReading(): boolean;
+export function submitCostForecast(form: HTMLFormElement): boolean;
+export function todaysEnergyTip(date?: string): string;
 export function coinBalanceCents(state?: CoinState): number;
 export function formatCoins(cents: number): string;
 export function getCoinState(options?: { reconcile?: boolean }): CoinState;

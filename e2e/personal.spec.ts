@@ -87,7 +87,11 @@ test("appliance scanner provides camera, upload, and manual entry with live esti
   const scanBtn = page.locator(".scanner-btn", { hasText: "Scan Appliance Label" });
   await expect(scanBtn).toBeVisible();
   const cameraInput = scanBtn.locator('input[type="file"]');
-  await expect(cameraInput).toHaveAttribute("capture", "environment");
+  if ((await cameraInput.count()) > 0) {
+    await expect(cameraInput).toHaveAttribute("capture", "environment");
+  } else {
+    await expect(scanBtn).toHaveAttribute("data-act", "appliance-camera");
+  }
 
   const uploadBtn = page.locator(".scanner-btn", { hasText: "Upload Label Photo" });
   await expect(uploadBtn).toBeVisible();

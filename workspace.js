@@ -9,6 +9,21 @@ const WORKSPACE_KEY = "smartwatts-workspace";
 let memberships = [];
 let rentalsStatus = firebaseConfigured ? "loading" : "unconfigured";
 let rentalsError = "";
+let platformAdmin = false;
+let workspaceLoadSequence = 0;
+let workspaceUserUid = null;
+
+/** UI hint only: whether the API reported the verified platformAdmin claim. The server enforces it. */
+export function isPlatformAdmin() {
+  return platformAdmin;
+}
+
+function announce() {
+  // Lets the React chat widget follow workspace/property switches without sharing state.
+  const detail = getWorkspace();
+  window.__smartwattsWorkspace = detail; // for listeners that mount after the first event
+  window.dispatchEvent(new CustomEvent("smartwatts-workspace-changed", { detail }));
+}
 
 function readSaved() {
   try {
@@ -48,29 +63,47 @@ export function setWorkspace(value) {
   } catch {
     // Workspace choice is a convenience; ignore storage failures.
   }
+  announce();
 }
 
 export async function loadWorkspaces() {
+  const sequence = ++workspaceLoadSequence;
+  const account = currentAccount();
+  const uid = account.permanent ? account.uid : null;
+  platformAdmin = false;
+  if (workspaceUserUid !== uid) {
+    memberships = [];
+    workspaceUserUid = uid;
+  }
   if (!firebaseConfigured) {
     memberships = [];
     rentalsStatus = "unconfigured";
+    announce();
     return memberships;
   }
-  if (!currentAccount().permanent) {
+  if (!account.permanent) {
     memberships = [];
     rentalsStatus = "needs-account";
+    announce();
     return memberships;
   }
   try {
-    const result = await apiGet("/api/account/workspaces");
+    const [result, platform] = await Promise.all([
+      apiGet("/api/account/workspaces"),
+      apiGet("/api/platform/me").catch(() => ({ platformAdmin: false })),
+    ]);
+    if (sequence !== workspaceLoadSequence || currentAccount().uid !== uid) return memberships;
     memberships = Array.isArray(result.rentalMemberships) ? result.rentalMemberships : [];
+    platformAdmin = platform?.platformAdmin === true;
     rentalsStatus = "ready";
     rentalsError = "";
   } catch (error) {
+    if (sequence !== workspaceLoadSequence || currentAccount().uid !== uid) return memberships;
     memberships = [];
     rentalsStatus = "unavailable";
     rentalsError = error instanceof Error ? error.message : "Rentals service unavailable.";
   }
+  announce();
   return memberships;
 }
 

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#fffaf2">
+  <link rel="icon" type="image/svg+xml" href="/pwa-icon.svg">
   <title>SmartWatts | Energy Dashboard</title>
   <!-- Hide the dashboard until the login check in src/lib/sessionGuard.ts passes. -->
   <script>document.documentElement.classList.add("auth-pending");</script>
@@ -23,7 +24,13 @@
 <body>
 <div class="app-shell">
   <aside class="sidebar" id="sidebar">
-    <div class="brand"><span class="brand-mark"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h7l-1 8 10-13h-7l1-7Z"/></svg></span><span><b>Smart<span>Watts</span></b><small>Monitor. Save. Smarter.</small></span></div>
+    <div class="brand">
+      <a href="#/dashboard" class="brand-link" data-page="dashboard" aria-label="SmartWatts Dashboard">
+        <img src="/branding/smartwatts-logo-light.svg" alt="SmartWatts" class="brand-logo brand-logo-light" width="76" height="80">
+        <img src="/branding/smartwatts-logo-dark.svg" alt="SmartWatts" class="brand-logo brand-logo-dark" width="76" height="80">
+      </a>
+      <small class="brand-tagline">Monitor. Save. Smarter.</small>
+    </div>
     <div class="workspace-switcher" id="workspaceSwitcher"></div>
     <button class="mobile-close" id="closeSidebar" aria-label="Close menu"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
     <nav id="navigation"></nav>
@@ -39,7 +46,7 @@
   <main class="main">
     <header class="topbar">
       <button class="menu-toggle" id="menuToggle" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <div class="welcome"><h1 id="pageTitle">Good morning, Rean Justine!</h1><p id="pageSubtitle">Here's what's happening with your electricity today.</p></div>
+      <div class="welcome"><h1 id="pageTitle">Dashboard</h1><p id="pageSubtitle">Here's what's happening with your electricity today.</p></div>
       <nav class="quick-nav" aria-label="Quick navigation">
         <button class="quick-link" data-page="breakdown">Analytics</button>
         <button class="quick-link" data-page="about">About Team</button>
@@ -54,7 +61,6 @@
           </select>
           <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">🌙</button>
         </div>
-        <button class="provider"><span class="meralco-mark">M</span> MERALCO <span class="provider-chevron"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></button>
         <div class="notification-wrap" id="notificationWrap"><button class="icon-button" aria-label="Notifications" id="notificationsBtn" aria-expanded="false" aria-controls="notificationPopover"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><i class="notification-dot" id="notificationBadge" style="display:none">0</i></button><div class="notification-popover" id="notificationPopover" hidden></div></div>
         <button class="avatar" data-page="account" id="userAvatar">RJ</button>
         <button class="icon-button" id="logoutButton" type="button" aria-label="Log out" title="Log out"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></button>

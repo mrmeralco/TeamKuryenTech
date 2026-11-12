@@ -154,7 +154,7 @@ const translations = {
   "BILLING": "SINGILAN",
   "SETTINGS": "MGA SETTING",
   "MORE": "IBA PA",
-  "Good morning, Rean Justine!": "Magandang umaga, Rean Justine!",
+  "Dashboard": "Dashboard",
   "Here's what's happening with your electricity today.": "Narito ang mga update sa konsumo ng kuryente mo ngayong araw.",
   "Build better habits and track your household energy targets.": "Bumuo ng mabubuting gawi at subaybayan ang konsumo ng enerhiya sa bahay.",
   "Track your electricity usage as it happens.": "Subaybayan ang konsumo ng kuryente habang nangyayari ito.",

@@ -2,7 +2,7 @@
 // the plans page, and the entry point to SmartWatts Rentals.
 import {
   deleteAppliance, deleteBill, deleteSavingsPlan, ensureUserProfile, listAppliances, listBills, listSavingsPlans,
-  saveAppliance, saveBill, saveSavingsPlan, saveUserProfile, storageMode,
+  loadUserProfile, saveAppliance, saveBill, saveSavingsPlan, saveUserProfile, storageMode,
 } from "./src/lib/personal/store.ts";
 import { effectiveRateCentavosPerKwh, estimateMonthlyKwh, simulateSavings } from "./src/lib/personal/estimates.ts";
 import { extractBillFields, redactBillText } from "./src/lib/ocr.ts";
@@ -20,13 +20,19 @@ import {
   resendVerification, signInPermanent, signOutAccount,
 } from "./src/lib/account.ts";
 import { apiPost } from "./src/lib/apiAuth.ts";
-import { firebaseConfigured } from "./src/lib/firebase.ts";
+import { auth, firebaseConfigured } from "./src/lib/firebase.ts";
 import {
-  errorMessage, field, fill, formatPeso, formValues, kindBadge, notice, slot, table, user, LEGAL_NOTICE, todayIso,
+  EmailAuthProvider, GoogleAuthProvider, reauthenticateWithCredential, reauthenticateWithPopup,
+  reload, sendPasswordResetEmail, updateProfile, verifyBeforeUpdateEmail,
+} from "firebase/auth";
+import { getLanguage, getSupportedLanguages, setLanguage } from "./i18n.js";
+import { captureInviteFromHash, hasPendingInvite, PENDING_INVITE_KEY } from "./src/lib/pendingInvite.ts";
+import {
+  errorMessage, field, fill, formatPeso, formValues, kindBadge, lifecycleBadge, notice, slot, table, user, LEGAL_NOTICE, todayIso,
 } from "./ui-kit.js";
-import { getMemberships, getRentalsStatus, loadWorkspaces, setWorkspace } from "./workspace.js";
+import { getMemberships, getRentalsStatus, getWorkspace, loadWorkspaces, setWorkspace } from "./workspace.js";
 
-export const PENDING_INVITE_KEY = "smartwatts-pending-invite";
+export { PENDING_INVITE_KEY };
 const CATEGORIES = ["cooling", "refrigeration", "lighting", "entertainment", "laundry", "cooking", "computing", "other"];
 const SAMPLE_APPLIANCES = [
   ["Air Conditioner", 129.23], ["Refrigerator", 75.28], ["Television", 45.67], ["Washing Machine", 32.18], ["Others", 59.82],
@@ -609,6 +615,7 @@ function billsPage(ctx) {
           ${field("Period end", `<input name="periodEnd" type="date" required max="${todayIso()}">`)}
           ${field("Billed kWh", `<input name="kwh" inputmode="decimal" required>`)}
           ${field("Total current charges (₱)", `<input name="amount" inputmode="decimal" required>`, { hint: "This month's charges, excluding any previous unpaid balance." })}
+          ${field("Due date (optional)", `<input name="dueDate" type="date">`, { hint: "Used for email reminders when due date approaches." })}
           ${field("Previous meter reading (optional)", `<input name="previousReading" inputmode="decimal">`)}
           ${field("Present meter reading (optional)", `<input name="presentReading" inputmode="decimal">`)}
           <details class="field full charge-breakdown">
@@ -794,53 +801,128 @@ async function loadPlans(_ctx, root) {
 }
 
 // ------------------------------------------------------- account & auth
-function accountSecurityHtml() {
-  const account = currentAccount();
-  if (!firebaseConfigured) {
-    return notice("info", "Firebase is not configured, so the app runs in local demo mode. Personal data stays on this device and SmartWatts Rentals is unavailable.");
-  }
-  const pendingInvite = sessionStorage.getItem(PENDING_INVITE_KEY);
-  if (account.permanent) {
-    return `
-      <div class="detail-list">
-        <div class="detail-row"><span>Signed in as</span><b>${user(account.email ?? "Google account")}</b></div>
-        <div class="detail-row"><span>Email verified</span><b>${account.emailVerified ? "Yes" : "Not yet"}</b></div>
-        <div class="detail-row"><span>Personal workspace</span><b>SmartWatts Personal · Free</b></div>
-      </div>
-      <div class="toolbar" style="margin-top:12px">
-        ${pendingInvite ? `<button class="btn btn-primary" data-page="join">Continue to your rental invitation</button>` : ""}
-        ${account.emailVerified ? "" : `<button class="btn btn-outline" data-act="resend-verification">Resend verification email</button>`}
-        <button class="btn btn-outline" data-act="sign-out">Sign out</button>
-      </div>`;
-  }
-  return `
-    <p class="stat-foot">You are using a free guest session on this device. Create a permanent account to keep your data, use SmartWatts on other devices, and join or manage rental properties. Your existing personal data is kept.</p>
-    ${pendingInvite ? notice("info", "Create or sign in to a permanent account to accept your rental invitation.") : ""}
-    <div class="two-panels">
-      <form class="form-grid" data-form="account-create">
-        <h4 class="full">Create account</h4>
-        ${field("Display Name", `<input name="displayName" type="text" required autocomplete="name" placeholder="e.g. Maria Santos">`, { full: true })}
-        ${field("Home setup", `<select name="dwellingType" required><option value="homeowner">Tier 1 · Personal homeowner</option><option value="condo_apartment">Tier 2 · Condo / apartment resident</option></select>`, { full: true })}
-        ${field("Monthly bill source", `<select name="utilityRecordType" required><option value="meralco_bill">Meralco electricity bill</option><option value="condo_soa">Condo / apartment statement of account</option><option value="submeter_slip">Sub-meter reading slip</option></select>`, { full: true })}
-        ${field("Baseline monthly consumption (kWh)", `<input name="baselineKwh" type="number" min="0.01" max="1000000" step="0.01" required inputmode="decimal" placeholder="e.g. 250">`, { full: true, hint: "Use the latest verified bill or statement so SmartWatts has a starting point." })}
-        ${field("Baseline billing period end", `<input name="baselinePeriodEnd" type="date" required>`, { full: true })}
-        ${field("Email", `<input name="email" type="email" required autocomplete="email">`, { full: true })}
-        ${field("Password", `<input name="password" type="password" minlength="8" required autocomplete="new-password">`, { full: true })}
-        <div class="field full"><button class="btn btn-primary" type="submit">Create account &amp; keep my data</button></div>
-      </form>
-      <form class="form-grid" data-form="account-sign-in">
-        <h4 class="full">Already have an account?</h4>
-        ${field("Email", `<input name="email" type="email" required autocomplete="email">`, { full: true })}
-        ${field("Password", `<input name="password" type="password" required autocomplete="current-password">`, { full: true })}
-        <div class="field full"><button class="btn btn-outline" type="submit">Sign in</button></div>
-        <p class="muted-note full">Signing in to a different account switches away from this guest session's data.</p>
-      </form>
-    </div>
-    <button class="btn btn-outline" data-act="google-sign-in">Continue with Google</button>`;
+function accountPersonalHtml(ctx, profile, identity) {
+  const firstName = profile.firstName ?? "";
+  const lastName = profile.lastName ?? "";
+  const phone = identity.phoneNumber || profile.phoneNumber || "";
+  return `<p class="muted-note">Current Firebase display name: <strong id="account-current-display-name">${ctx.escape(profile.displayName || identity.displayName || "Not set")}</strong>. First and last name fields are shown only when saved separately.</p>
+  <form class="form-grid" data-form="account-profile-save" autocomplete="on">
+    <div class="field"><label for="account-first-name">First name</label><input id="account-first-name" name="firstName" maxlength="100" autocomplete="given-name" value="${ctx.escape(firstName)}" placeholder="Enter your first name"></div>
+    <div class="field"><label for="account-last-name">Last name</label><input id="account-last-name" name="lastName" maxlength="100" autocomplete="family-name" value="${ctx.escape(lastName)}" placeholder="Enter your last name"></div>
+    <div class="field"><label for="account-email">Email address</label><input id="account-email" type="email" value="${ctx.escape(identity.email || "")}" readonly aria-readonly="true" autocomplete="email"><small class="muted-note">This is read from Firebase Authentication. Use Security for account actions.</small></div>
+    <div class="field"><label for="account-phone">Mobile number</label><input id="account-phone" name="phoneNumber" type="tel" maxlength="32" autocomplete="tel" value="${ctx.escape(phone)}" placeholder="Enter your mobile number"${identity.phoneNumber ? " readonly aria-readonly=\"true\"" : ""}><small class="muted-note">${identity.phoneNumber ? "Verified by Firebase Authentication." : "Saved to your private profile; not verified by your utility provider."}</small></div>
+    <div class="field full"><button class="btn btn-primary" type="submit">Save Changes</button></div>
+  </form>`;
 }
 
-async function loadAccount(_ctx, root) {
-  fill(root, "account-security", accountSecurityHtml());
+function accountServiceHtml(ctx, profile) {
+  const options = (items, selected) => items.map(([value, label]) => `<option value="${value}"${selected === value ? " selected" : ""}>${label}</option>`).join("");
+  return `<form class="form-grid" data-form="account-service-save" autocomplete="on">
+    <div class="field"><label for="service-provider">Electricity provider</label><input id="service-provider" name="serviceProvider" maxlength="80" value="${ctx.escape(profile.serviceProvider || "")}" placeholder="Enter your electricity provider"></div>
+    <div class="field"><label for="service-account">Utility account number</label><input id="service-account" name="utilityAccountNumber" maxlength="64" value="${ctx.escape(profile.utilityAccountNumber || "")}" placeholder="Add your utility account number" autocomplete="off"></div>
+    <div class="field full"><label for="service-address">Service address</label><textarea id="service-address" name="serviceAddress" maxlength="300" rows="3" autocomplete="street-address" placeholder="Add your service address">${ctx.escape(profile.serviceAddress || "")}</textarea></div>
+    <div class="field"><label for="service-rate">Rate category</label><input id="service-rate" name="rateCategory" maxlength="60" value="${ctx.escape(profile.rateCategory || "")}" placeholder="Enter rate category if shown on your bill"><small class="muted-note">Self-reported; not verified by MERALCO.</small></div>
+    <div class="field"><label for="service-dwelling">Home setup</label><select id="service-dwelling" name="dwellingType"><option value="">Not specified</option>${options([["homeowner", "Homeowner"], ["condo_apartment", "Condo / apartment resident"]], profile.dwellingType)}</select></div>
+    <div class="field"><label for="service-record-type">Utility record type</label><select id="service-record-type" name="utilityRecordType"><option value="">Not specified</option>${options([["meralco_bill", "Meralco bill"], ["condo_soa", "Condo / apartment statement"], ["submeter_slip", "Sub-meter slip"]], profile.utilityRecordType)}</select></div>
+    <div class="field full"><small class="muted-note">These details are private to your SmartWatts account and do not indicate a verified utility connection. Only one service profile is currently supported.</small></div>
+    <div class="field full"><button class="btn btn-primary" type="submit">Save Service Details</button></div>
+  </form>`;
+}
+
+function accountSecurityHtml(ctx, identity) {
+  const providers = identity.providerData.map((provider) => ({
+    "google.com": "Google", password: "Email / Password", phone: "Phone",
+  }[provider.providerId] ?? "Other sign-in provider"));
+  const hasPassword = identity.providerData.some((provider) => provider.providerId === "password");
+  const emailProvider = identity.providerData.some((provider) => ["password", "google.com"].includes(provider.providerId));
+  return `<div class="detail-list">
+      <div class="detail-row"><span>Signed-in email</span><b>${ctx.escape(identity.email || "Not provided by this sign-in method")}</b></div>
+      <div class="detail-row"><span>Email verified</span><b>${identity.email ? (identity.emailVerified ? "Yes" : "Not yet") : "Not applicable"}</b></div>
+      <div class="detail-row"><span>Sign-in provider</span><b>${ctx.escape([...new Set(providers)].join(", ") || (identity.isAnonymous ? "Guest session" : "Not available"))}</b></div>
+      <div class="detail-row"><span>Account type</span><b>${identity.isAnonymous ? "Temporary guest" : "Permanent account"}</b></div>
+    </div>
+    <div class="toolbar" style="margin-top:14px">
+      ${identity.email && !identity.emailVerified && emailProvider ? `<button class="btn btn-outline" data-act="resend-verification">Send verification email</button><button class="btn btn-outline" data-act="account-refresh-verification">Refresh verification status</button>` : ""}
+      ${hasPassword && identity.email ? `<button class="btn btn-outline" data-act="account-password-reset">Send password reset link</button>` : ""}
+      ${!hasPassword && providers.includes("Google") ? `<span class="muted-note">Password is managed by Google for this account.</span>` : ""}
+      <button class="btn btn-outline" data-act="sign-out">Sign out</button>
+    </div>
+    ${identity.email ? `<form class="form-grid" data-form="account-email-update" style="margin-top:16px">
+      <div class="field"><label for="account-new-email">New email address</label><input id="account-new-email" name="newEmail" type="email" required autocomplete="email" placeholder="Enter a new email address"></div>
+      ${hasPassword ? `<div class="field"><label for="account-current-password">Current password</label><input id="account-current-password" name="currentPassword" type="password" required autocomplete="current-password"></div>` : `<div class="field"><span class="muted-note">Google will ask you to confirm your identity in a sign-in popup.</span></div>`}
+      <div class="field full"><button class="btn btn-outline" type="submit">Verify new email</button><small class="muted-note">Firebase emails a verification link. Your sign-in email changes only after the link is confirmed.</small></div>
+    </form>` : ""}`;
+}
+
+function accountPreferencesHtml(ctx, profile) {
+  const languages = getSupportedLanguages();
+  const preferredLanguage = languages.some((language) => language.code === profile.preferredLanguage) ? profile.preferredLanguage : getLanguage();
+  const languageOptions = languages.map((language) => `<option value="${ctx.escape(language.code)}"${preferredLanguage === language.code ? " selected" : ""}>${ctx.escape(language.name)}</option>`).join("");
+  let theme = "light";
+  try { theme = localStorage.getItem("smartwatts-theme") === "dark" ? "dark" : "light"; } catch { /* use current light fallback */ }
+  const np = profile.notificationPreferences || {};
+  const reminderIntervals = np.reminder_intervals || [7, 3, 0];
+  return `<form class="form-grid" data-form="account-preferences-save">
+    <div class="field"><label for="account-language">Interface language</label><select id="account-language" name="preferredLanguage">${languageOptions}</select><small class="muted-note">Saved to your account when Firebase is available. Locally supported translations work without cloud translation.</small></div>
+    <div class="field"><label for="account-theme">Theme</label><select id="account-theme" name="theme"><option value="light"${theme === "light" ? " selected" : ""}>Light</option><option value="dark"${theme === "dark" ? " selected" : ""}>Dark</option></select><small class="muted-note">Theme is saved on this browser, matching the existing app preference.</small></div>
+    <div class="field full">
+      <label>Email notifications</label>
+      <div style="display:grid;gap:8px;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+          <input type="checkbox" name="bill_saved_confirmations"${np.bill_saved_confirmations !== false ? " checked" : ""}>
+          <span>Send email confirmation when a bill is saved</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+          <input type="checkbox" name="bill_due_reminders"${np.bill_due_reminders !== false ? " checked" : ""}>
+          <span>Send email reminders when bill due date approaches</span>
+        </label>
+        <div style="margin-left:24px;display:flex;gap:12px;font-size:12px">
+          <label style="display:flex;align-items:center;gap:4px">
+            <input type="checkbox" name="reminder_7_days"${reminderIntervals.includes(7) ? " checked" : ""}> 7 days before
+          </label>
+          <label style="display:flex;align-items:center;gap:4px">
+            <input type="checkbox" name="reminder_3_days"${reminderIntervals.includes(3) ? " checked" : ""}> 3 days before
+          </label>
+          <label style="display:flex;align-items:center;gap:4px">
+            <input type="checkbox" name="reminder_0_days"${reminderIntervals.includes(0) ? " checked" : ""}> On due date
+          </label>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+          <input type="checkbox" name="rental_statements"${np.rental_statements !== false ? " checked" : ""}>
+          <span>Send email notifications when a rental electricity statement is published</span>
+        </label>
+      </div>
+      <small class="muted-note">Notifications are sent to your verified sign-in email. SmartWatts never sends marketing emails or shares your address.</small>
+    </div>
+    <div class="field full"><button class="btn btn-primary" type="submit">Save Preferences</button></div>
+  </form>`;
+}
+
+async function loadAccount(ctx, root) {
+  if (!firebaseConfigured || !auth) {
+    fill(root, "account-context", notice("warning", "Firebase Authentication is unavailable. Customer profile settings cannot be loaded or saved."));
+    for (const section of ["personal", "service", "security", "preferences"]) fill(root, `account-${section}`, notice("info", "Sign in with Firebase to manage account settings."));
+    return;
+  }
+  await auth.authStateReady();
+  const identity = auth.currentUser;
+  if (!identity) throw new Error("Sign in before opening Account Settings.");
+  const uid = identity.uid;
+  const profile = await loadUserProfile(uid);
+  if (root.isStale || auth.currentUser?.uid !== uid) return;
+  const workspace = getWorkspace();
+  const membership = getMemberships().find((item) => item.propertyId === workspace.propertyId);
+  const workspaceLabel = workspace.type === "owner"
+    ? `Rentals ${workspace.role === "admin" ? "Administrator" : "Owner"} · ${workspace.propertyName} · subscription ${membership?.lifecycle ?? "managed by property"}`
+    : workspace.type === "tenant" ? `Rentals Tenant · ${workspace.propertyName} · property access` : "SmartWatts Personal · Free";
+  fill(root, "account-context", `<span>Signed-in account</span> · ${ctx.escape(identity.displayName || identity.email || "Firebase user")} · ${ctx.escape(workspaceLabel)}`);
+  const safeProfile = profile ?? { displayName: null, firstName: null, lastName: null, phoneNumber: null, serviceProvider: null,
+    serviceAddress: null, utilityAccountNumber: null, rateCategory: null, preferredLanguage: null, dwellingType: null,
+    utilityRecordType: null, baselineKwh: null, baselinePeriodEnd: null };
+  fill(root, "account-personal", accountPersonalHtml(ctx, safeProfile, identity));
+  fill(root, "account-service", accountServiceHtml(ctx, safeProfile));
+  fill(root, "account-security", accountSecurityHtml(ctx, identity));
+  fill(root, "account-preferences", accountPreferencesHtml(ctx, safeProfile));
 }
 
 // ------------------------------------------------------- rentals entry
@@ -868,31 +950,40 @@ async function loadRentalsStart(ctx, root) {
     return;
   }
   const memberships = getMemberships();
+  const roleLabel = (m) => (m.role === "tenant" ? `Tenant${m.unitLabel ? ` · ${user(m.unitLabel)}` : ""}` : m.role === "owner" ? "Owner" : "Administrator");
+  const propertiesPanel = memberships.length ? ctx.panel("Your properties", `<ul class="property-list">${memberships.map((m) => `
+      <li><div><b translate="no">${ctx.escape(m.propertyName)}</b><small>${roleLabel(m)}</small></div>
+        ${m.lifecycle ? lifecycleBadge(m.lifecycle) : ""}
+        <button class="btn btn-outline btn-small" data-act="open-workspace" data-id="${encodeURIComponent(m.propertyId)}">Open</button></li>`).join("")}</ul>`) : "";
+  const createPanel = ctx.panel("Create a property", `
+    <form class="form-grid" data-form="property-create">
+      ${field("Property name", `<input name="name" required maxlength="120" placeholder="e.g. Sunrise Apartments">`, { full: true })}
+      ${field("Address", `<input name="address" required maxlength="240" placeholder="Street, barangay, city">`, { full: true })}
+      <div class="field full"><button class="btn btn-primary" type="submit">Create draft property</button></div>
+      <p class="muted-note full">Drafts are free. Set up units and meters first; request activation (₱299 / property / month, proposed) when you are ready to invite tenants.</p>
+    </form>`);
+  const joinPanel = ctx.panel("Join with an invitation", `
+    <form class="form-grid" data-form="invite-code">
+      ${field("Invitation code or link", `<input name="code" required autocomplete="off">`, { full: true, hint: "Scan your landlord's QR code, or paste the link or code here." })}
+      <div class="field full"><button class="btn btn-outline" type="submit">Continue</button></div>
+    </form>
+    <p class="muted-note">Tenants never pay a SmartWatts subscription.</p>`);
+  const howItWorks = ctx.panel("How SmartWatts Rentals works", `<div class="rentals-how">
+      <div><h4>Owners &amp; administrators</h4><ol>
+        <li>Create a draft property and add up to 10 units.</li>
+        <li>Register meters: one per unit, or a shared meter with a written allocation agreement.</li>
+        <li>Activate the subscription, then invite tenants with a one-time link or QR code.</li>
+        <li>Record readings and utility bills, review draft statements, and publish them.</li></ol></div>
+      <div><h4>Tenants</h4><ol>
+        <li>Open your landlord's invitation and sign in or register.</li>
+        <li>See your unit, how your electricity is metered or allocated, and published statements.</li>
+        <li>Ask your landlord to re-check a statement if something looks wrong.</li>
+        <li>Your Personal appliances, savings plans, and AI chats stay private.</li></ol></div>
+    </div>`);
   fill(root, "rentals-start", `
-    <div class="two-panels">
-      ${ctx.panel("Your properties", table(
-        ["Property", "Role", ""],
-        memberships.map((m) => [
-          user(m.propertyName),
-          m.role === "tenant" ? `Tenant${m.unitLabel ? ` · ${user(m.unitLabel)}` : ""}` : m.role === "owner" ? "Owner" : "Administrator",
-          `<button class="btn btn-outline btn-small" data-act="open-workspace" data-id="${encodeURIComponent(m.propertyId)}">Open</button>`,
-        ]),
-        "You are not a member of any rental property yet.",
-      ))}
-      ${ctx.panel("Add a property (owners)", `
-        <form class="form-grid" data-form="property-create">
-          ${field("Property name", `<input name="name" required maxlength="120">`, { full: true })}
-          ${field("Address", `<input name="address" required maxlength="240">`, { full: true })}
-          <div class="field full"><button class="btn btn-primary" type="submit">Create property</button></div>
-          <p class="muted-note full">New properties start inactive. Request activation from the Subscription page; no payment is collected in the app.</p>
-        </form>`)}
-    </div>
-    <div style="margin-top:14px">${ctx.panel("Tenants: join with an invitation", `
-      <form class="form-grid" data-form="invite-code">
-        ${field("Invitation code or link", `<input name="code" required autocomplete="off">`, { full: true, hint: "Scan your landlord's QR code, or paste the link or code here." })}
-        <div class="field full"><button class="btn btn-outline" type="submit">Continue</button></div>
-      </form>
-      <p class="muted-note">Tenants never pay a SmartWatts subscription.</p>`)}</div>`);
+    ${propertiesPanel ? `<div style="margin-bottom:14px">${propertiesPanel}</div>` : ""}
+    <div class="two-panels">${createPanel}${joinPanel}</div>
+    <div style="margin-top:14px">${howItWorks}</div>`);
 }
 
 function joinPage(ctx) {
@@ -934,17 +1025,10 @@ async function loadJoin(ctx, root) {
 }
 
 export function readInviteFromHash() {
-  const match = window.location.hash.match(/^#join=([A-Za-z0-9_-]{20,200})$/);
-  if (!match) return false;
-  try {
-    sessionStorage.setItem(PENDING_INVITE_KEY, match[1]);
-  } catch {
-    return false;
-  }
-  // Remove the secret token from the address bar and browser history.
-  history.replaceState(null, "", window.location.pathname + window.location.search);
-  return true;
+  return captureInviteFromHash();
 }
+
+export { hasPendingInvite };
 
 function inviteTokenFromInput(value) {
   const trimmed = String(value).trim();
@@ -966,6 +1050,112 @@ export const personalPages = {
 export const personalLoaders = { account: loadAccount };
 
 export const personalForms = {
+  async "account-email-update"(form, ctx) {
+    const identity = auth?.currentUser;
+    if (!identity?.email) throw new Error("A verified email sign-in is required to update this account email.");
+    const values = formValues(form);
+    const newEmail = String(values.newEmail ?? "").trim();
+    if (!/^\S+@\S+\.\S+$/.test(newEmail)) throw new Error("Enter a valid new email address.");
+    if (newEmail.toLowerCase() === identity.email.toLowerCase()) throw new Error("Enter an email address different from your current one.");
+    const hasPasswordProvider = identity.providerData.some((provider) => provider.providerId === "password");
+    const hasGoogleProvider = identity.providerData.some((provider) => provider.providerId === "google.com");
+    if (hasPasswordProvider && !String(values.currentPassword ?? "")) throw new Error("Enter your current password to confirm this change.");
+    if (!hasPasswordProvider && !hasGoogleProvider) throw new Error("This sign-in provider does not support email changes in SmartWatts.");
+    try {
+      if (hasPasswordProvider) {
+        const password = String(values.currentPassword);
+        await reauthenticateWithCredential(identity, EmailAuthProvider.credential(identity.email, password));
+      } else if (hasGoogleProvider) {
+        await reauthenticateWithPopup(identity, new GoogleAuthProvider());
+      }
+      if (auth.currentUser?.uid !== identity.uid) throw new Error("Your signed-in account changed. Reload Account Settings and try again.");
+      await verifyBeforeUpdateEmail(identity, newEmail);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("account changed")) throw error;
+      throw new Error(friendlyAuthError(error));
+    }
+    ctx.toast("Firebase sent a verification link. Your email changes after you confirm it.");
+  },
+  async "account-profile-save"(form, ctx) {
+    const identity = auth?.currentUser;
+    if (!identity || identity.isAnonymous) throw new Error("A permanent Firebase account is required to save profile details.");
+    const uid = identity.uid;
+    const values = formValues(form);
+    const firstName = String(values.firstName ?? "").trim();
+    const lastName = String(values.lastName ?? "").trim();
+    if (firstName.length > 100 || lastName.length > 100) throw new Error("Names must be 100 characters or fewer.");
+    const profile = { firstName, lastName };
+    if (!form.elements.phoneNumber.readOnly) profile.phoneNumber = String(values.phoneNumber ?? "").trim();
+    if (!await saveUserProfile(profile)) throw new Error("Firebase could not save your profile. Check your connection and try again.");
+    if (auth.currentUser?.uid !== uid) return;
+    const displayName = [firstName, lastName].filter(Boolean).join(" ") || null;
+    try {
+      await updateProfile(identity, { displayName });
+    } catch (error) {
+      throw new Error(`Your profile was saved, but Firebase could not update the account display name: ${friendlyAuthError(error)}`);
+    }
+    const displayNameElement = document.querySelector("#account-current-display-name");
+    if (displayNameElement) displayNameElement.textContent = displayName || "Not set";
+    ctx.toast("Personal information saved to your account.");
+  },
+  async "account-service-save"(form, ctx) {
+    const identity = auth?.currentUser;
+    if (!identity || identity.isAnonymous) throw new Error("A permanent Firebase account is required to save service details.");
+    const values = formValues(form);
+    const dwellingType = String(values.dwellingType ?? "") || null;
+    const utilityRecordType = String(values.utilityRecordType ?? "") || null;
+    if (Boolean(dwellingType) !== Boolean(utilityRecordType)) throw new Error("Choose both home setup and utility record type, or leave both unspecified.");
+    const saved = await saveUserProfile({
+      serviceProvider: String(values.serviceProvider ?? ""),
+      serviceAddress: String(values.serviceAddress ?? ""),
+      utilityAccountNumber: String(values.utilityAccountNumber ?? ""),
+      rateCategory: String(values.rateCategory ?? ""),
+      dwellingType,
+      utilityRecordType,
+    });
+    if (!saved) throw new Error("Firebase could not save your service details. Check your connection and try again.");
+    ctx.toast("Service details saved. These entries are not utility-provider verified.");
+  },
+  async "account-preferences-save"(form, ctx) {
+    const values = formValues(form);
+    const language = String(values.preferredLanguage ?? "");
+    const theme = String(values.theme ?? "");
+    if (!getSupportedLanguages().some((item) => item.code === language)) throw new Error("Choose a supported interface language.");
+    if (!["light", "dark"].includes(theme)) throw new Error("Choose a valid theme.");
+    const reminder_intervals = [];
+    if (values.reminder_7_days === "on") reminder_intervals.push(7);
+    if (values.reminder_3_days === "on") reminder_intervals.push(3);
+    if (values.reminder_0_days === "on") reminder_intervals.push(0);
+    const notificationPreferences = {
+      bill_saved_confirmations: values.bill_saved_confirmations === "on",
+      bill_due_reminders: values.bill_due_reminders === "on",
+      reminder_intervals,
+      rental_statements: values.rental_statements === "on",
+    };
+    const saved = await saveUserProfile({ preferredLanguage: language, notificationPreferences });
+    if (!saved) throw new Error("Firebase could not save your language preference. Check your connection and try again.");
+    try {
+      const identity = auth?.currentUser;
+      if (identity && !identity.isAnonymous) {
+        const token = await identity.getIdToken();
+        fetch("/api/notifications/preferences", {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(notificationPreferences),
+        }).catch((err) => console.warn("Could not sync notification preferences:", err));
+      }
+    } catch (e) {
+      console.warn("Preference sync error:", e);
+    }
+    let themeSaved = true;
+    try { localStorage.setItem("smartwatts-theme", theme); } catch { themeSaved = false; }
+    window.dispatchEvent(new CustomEvent("smartwatts-theme-change", { detail: theme }));
+    if (language !== getLanguage()) setLanguage(language);
+    ctx.toast(themeSaved ? "Preferences saved." : "Language saved; theme changed for this session because browser storage is unavailable.");
+  },
   async "appliance-save"(form, ctx) {
     const v = formValues(form);
     const watts = Number(v.watts || 0);
@@ -1062,20 +1252,47 @@ export const personalForms = {
       components[category.id] = negative ? -centavos : centavos;
     }
     const reading = (value) => (String(value ?? "").trim() ? Number(String(value).replace(/,/g, "")) : null);
-    await saveBill({
+    const scanned = billScan.result?.bill?.billing;
+    const dueDate = v.dueDate ? String(v.dueDate).trim() : (scanned?.dueDate || null);
+    const billId = await saveBill({
       periodStart: String(v.periodStart), periodEnd: String(v.periodEnd), kwh: Number(String(v.kwh).replace(/,/g, "")),
       amountCentavos, source: v.source === "ocr" ? "ocr" : "manual",
       components: Object.keys(components).length ? components : null,
       previousReading: reading(v.previousReading), presentReading: reading(v.presentReading),
+      dueDate,
     });
     // Dates read by the scanner go straight onto the bill calendar.
-    const scanned = billScan.result?.bill?.billing;
     if (scanned && (scanned.dueDate || scanned.billDate || scanned.nextReadingDate) && (!scanned.periodEnd || scanned.periodEnd === String(v.periodEnd))) {
       saveBillDates({
         periodEnd: String(v.periodEnd), periodStart: String(v.periodStart), amountCentavos,
         billDate: scanned.billDate, dueDate: scanned.dueDate, nextReadingDate: scanned.nextReadingDate,
       });
       billCal.month = null;
+    }
+    // Queue server-side email confirmation when user is signed in
+    try {
+      const identity = auth?.currentUser;
+      if (identity && !identity.isAnonymous && identity.email) {
+        const token = await identity.getIdToken();
+        fetch("/api/notifications/bill-saved", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            billId: String(billId),
+            periodStart: String(v.periodStart),
+            periodEnd: String(v.periodEnd),
+            amountPesos: amountCentavos / 100,
+            kwh: Number(String(v.kwh).replace(/,/g, "")),
+            dueDate: dueDate || null,
+            workspaceType: "Personal",
+          }),
+        }).catch((err) => console.warn("Could not queue bill saved notification:", err));
+      }
+    } catch (notifyErr) {
+      console.warn("Notification trigger failed:", notifyErr);
     }
     if (Object.keys(components).length) {
       const check = reconcileBill(amountCentavos, components);
@@ -1254,8 +1471,8 @@ export const personalActions = {
   async "sign-out"(_button, ctx) {
     await signOutAccount();
     setWorkspace(null);
-    ctx.toast("Signed out.");
-    await ctx.accountChanged();
+    sessionStorage.removeItem(PENDING_INVITE_KEY);
+    window.location.assign("/landing/login.html");
   },
   async "resend-verification"(_button, ctx) {
     try {
@@ -1264,6 +1481,25 @@ export const personalActions = {
       throw new Error(friendlyAuthError(error));
     }
     ctx.toast("Verification email sent.");
+  },
+  async "account-password-reset"(_button, ctx) {
+    const identity = auth?.currentUser;
+    if (!identity?.email || !identity.providerData.some((provider) => provider.providerId === "password")) {
+      throw new Error("Password reset is available only for an Email / Password account.");
+    }
+    try {
+      await sendPasswordResetEmail(auth, identity.email);
+    } catch (error) {
+      throw new Error(friendlyAuthError(error));
+    }
+    ctx.toast("Firebase sent a password reset link to your signed-in email.");
+  },
+  async "account-refresh-verification"(_button, ctx) {
+    const identity = auth?.currentUser;
+    if (!identity) throw new Error("Sign in again to refresh account status.");
+    await reload(identity);
+    ctx.render();
+    ctx.toast(identity.emailVerified ? "Email verification confirmed." : "Firebase still reports this email as unverified.");
   },
   async "open-workspace"(button, ctx) {
     const membership = getMemberships().find((m) => m.propertyId === decodeURIComponent(button.dataset.id));
@@ -1428,6 +1664,7 @@ function applyScanToForm(root, scan) {
     amountPesos: b.totals.chargesThisPeriod != null ? b.totals.chargesThisPeriod.toFixed(2) : generic.amountPesos,
     periodStart: b.billing.periodStart ?? generic.periodStart,
     periodEnd: b.billing.periodEnd ?? generic.periodEnd,
+    dueDate: b.billing.dueDate ?? generic.dueDate ?? null,
     previousReading: b.reading.previous ?? generic.previousReading,
     presentReading: b.reading.current ?? generic.presentReading,
     components: Object.keys(scannedComponents).length ? scannedComponents : generic.components,
@@ -1439,6 +1676,7 @@ function applyScanToForm(root, scan) {
   set("amount", suggestion.amountPesos);
   set("periodStart", suggestion.periodStart);
   set("periodEnd", suggestion.periodEnd);
+  set("dueDate", suggestion.dueDate);
   set("previousReading", suggestion.previousReading);
   set("presentReading", suggestion.presentReading);
   for (const [category, centavos] of Object.entries(suggestion.components)) set(`component:${category}`, (centavos / 100).toFixed(2));

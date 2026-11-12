@@ -14,7 +14,9 @@ load_dotenv()
 from .auth import AuthUser, require_user  # noqa: E402
 from .advisor import AdvisorContext, compute_facts, deterministic_summary, system_prompt, unverified_figures  # noqa: E402
 from .rentals.router import router as rentals_router  # noqa: E402
+from .assistant.router import router as assistant_router  # noqa: E402
 from .email_otp import router as email_otp_router  # noqa: E402
+from .notifications.router import router as notifications_router  # noqa: E402
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GOOGLE_TRANSLATE_URL = "https://translation.googleapis.com/language/translate/v2"
@@ -122,6 +124,8 @@ app.add_middleware(
 
 app.include_router(rentals_router)
 app.include_router(email_otp_router)
+app.include_router(assistant_router)
+app.include_router(notifications_router)
 
 
 @app.get("/api/health")

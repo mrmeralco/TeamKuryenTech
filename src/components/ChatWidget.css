@@ -1,0 +1,54 @@
+#chat-root .smartwatts-chat-widget {
+  position: fixed;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1.25rem, env(safe-area-inset-bottom));
+  z-index: 30;
+  pointer-events: auto;
+}
+
+#chat-root .smartwatts-chat-panel {
+  width: min(23rem, calc(100vw - 2rem - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  height: min(34rem, calc(100dvh - 3rem - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+  min-height: 14rem;
+  margin-bottom: .75rem;
+}
+
+#chat-root .smartwatts-chat-messages {
+  min-height: 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 800px) {
+  #chat-root .smartwatts-chat-widget {
+    right: max(.75rem, env(safe-area-inset-right));
+    bottom: calc(5.25rem + env(safe-area-inset-bottom));
+  }
+
+  #chat-root .smartwatts-chat-panel {
+    height: min(34rem, calc(100dvh - 10rem - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+    min-height: 12rem;
+  }
+}
+
+@media (max-height: 520px) {
+  #chat-root .smartwatts-chat-widget { bottom: max(.5rem, env(safe-area-inset-bottom)); }
+  #chat-root .smartwatts-chat-panel {
+    height: calc(100dvh - 1.5rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    min-height: 0;
+  }
+}
+
+/* Grounded assistant additions */
+.smartwatts-chat-context { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; color: #b45300; }
+.smartwatts-chat-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+.smartwatts-chat-suggestions button { border: 1px solid #ffc700; background: #fff; color: #7a4100; border-radius: 999px; padding: 5px 10px; font-size: 12px; text-align: left; cursor: pointer; }
+.smartwatts-chat-suggestions button:hover, .smartwatts-chat-suggestions button:focus-visible { background: #fff4cc; }
+.smartwatts-fact-kind { display: inline-block; border-radius: 999px; padding: 1px 6px; font-size: 10px; font-weight: 800; background: #f1f5f9; color: #475569; }
+.smartwatts-fact-kind.kind-actual_reading { background: #e7f6ec; color: #1f7a3c; }
+.smartwatts-fact-kind.kind-bill_derived { background: #e8efff; color: #2747a8; }
+.smartwatts-fact-kind.kind-estimate, .smartwatts-fact-kind.kind-simulation { background: #fff4dc; color: #8a5a00; }
+.smartwatts-fact-kind.kind-allocation { background: #f3e8ff; color: #6b2fa3; }
+.smartwatts-fact-kind.kind-browser_reported { background: #f1f5f9; color: #64748b; }
+.smartwatts-chat-switch { margin: 4px 0; border: 1px solid #ff7a00; background: #fff; color: #b45300; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 800; cursor: pointer; }
+.smartwatts-chat-switch:hover, .smartwatts-chat-switch:focus-visible { background: #fff4cc; }

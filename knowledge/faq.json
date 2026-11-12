@@ -1,0 +1,156 @@
+{
+  "categories": [
+    {
+      "id": "basics",
+      "title": "Electricity Basics",
+      "items": [
+        [
+          "What is Meralco?",
+          "Manila Electric Company (Meralco) is the largest private electric distribution utility in the Philippines. It distributes electricity to households and businesses in its franchise area."
+        ],
+        [
+          "What is a kilowatt-hour (kWh)?",
+          "A kWh is the unit used to measure electricity consumption. It represents using 1,000 watts of power for one hour."
+        ],
+        [
+          "What is the Meralco rate per kWh?",
+          "The rate per kWh can change monthly. Check your latest Meralco bill or official Meralco announcements for the applicable rate."
+        ],
+        [
+          "Why do power interruptions happen in the Philippines?",
+          "They may result from equipment problems, maintenance, weather conditions, transmission issues, or other system disturbances."
+        ]
+      ]
+    },
+    {
+      "id": "bills",
+      "title": "Meralco Bills & Payments",
+      "items": [
+        [
+          "How is electricity billed in the Philippines?",
+          "Electricity bills are generally based on monthly consumption in kilowatt-hours (kWh), multiplied by applicable rates and combined with other charges, taxes, and adjustments."
+        ],
+        [
+          "Why does my Meralco bill change every month?",
+          "Your bill may change due to differences in electricity consumption, monthly generation and transmission charges, taxes, and other applicable adjustments."
+        ],
+        [
+          "Where can I find my Meralco Customer Account Number (CAN)?",
+          "Your 10-digit CAN is located at the upper-right portion of your Meralco bill. It is used when paying through authorized payment partners."
+        ],
+        [
+          "Can I pay my Meralco bill through GCash?",
+          "Yes. You can pay through supported authorized payment channels. Always verify the account number and amount before confirming payment."
+        ],
+        [
+          "What happens if I fail to pay my electricity bill on time?",
+          "Your electricity service may be subject to disconnection after the applicable notice and procedures. Contact your electricity provider if you need assistance."
+        ],
+        [
+          "Can I request reconnection after my electricity is disconnected?",
+          "Yes. You must settle the required outstanding balance and follow your distribution utility's reconnection process."
+        ],
+        [
+          "Can I view my Meralco bills online?",
+          "Yes. You can register and enroll your electric service through My Meralco to view available electronic bills."
+        ]
+      ]
+    },
+    {
+      "id": "consumption",
+      "title": "Electricity Consumption",
+      "items": [
+        [
+          "Which household appliances consume the most electricity?",
+          "Common high-consumption appliances include air conditioners, refrigerators, electric water heaters, rice cookers, and electric ovens. Actual consumption depends on their power ratings and usage."
+        ],
+        [
+          "How can I calculate my electricity consumption?",
+          "kWh = (Watts × Hours Used) ÷ 1,000. For example, a 1,000 W appliance used for 3 hours consumes 3 kWh."
+        ],
+        [
+          "Why does my electricity bill increase during summer?",
+          "Households may use air conditioners and electric fans more frequently during hot weather, increasing electricity consumption."
+        ],
+        [
+          "Does using an air conditioner increase my Meralco bill?",
+          "Yes. Air conditioners can consume considerable electricity, especially when operated for long periods or at inefficient settings."
+        ],
+        [
+          "Does leaving chargers plugged in consume electricity?",
+          "Some chargers consume a small amount of standby electricity even when no device is connected."
+        ]
+      ]
+    },
+    {
+      "id": "rights",
+      "title": "Consumer Rights & Safety",
+      "items": [
+        [
+          "What is the Lifeline Discount Program?",
+          "It is a government-regulated electricity subsidy for qualified low-income and marginalized households. Eligible customers may receive discounts based on consumption and qualification requirements."
+        ],
+        [
+          "What is the Energy Regulatory Commission (ERC)?",
+          "The ERC is the government agency responsible for regulating the Philippine electricity industry and protecting electricity consumers."
+        ],
+        [
+          "Where can I report electricity-related complaints?",
+          "Contact your electricity provider first. If the issue remains unresolved, you may seek assistance from the ERC."
+        ],
+        [
+          "What should I do if my electricity meter appears defective?",
+          "Avoid tampering with the meter. Contact your electricity provider and request an inspection."
+        ]
+      ]
+    },
+    {
+      "id": "smartwatts",
+      "title": "SmartWatts System Guide",
+      "items": [
+        [
+          "Can SmartWatts monitor my electricity consumption automatically?",
+          "No. SmartWatts does not connect to meters or IoT hardware, so it cannot measure live household consumption. It analyzes the bills you upload and the appliance schedules you enter."
+        ],
+        [
+          "Can SmartWatts calculate my estimated Meralco bill?",
+          "Yes. It estimates your bill from recorded kWh consumption and the rate you enter or the rate derived from your latest bill. Your actual bill may differ because of additional charges and adjustments."
+        ],
+        [
+          "Can I upload my previous Meralco bills to SmartWatts?",
+          "Yes. Use Bill Upload & History to scan or type past bills, track historical consumption, and compare monthly usage."
+        ],
+        [
+          "Can SmartWatts identify which appliance consumes the most electricity?",
+          "It estimates appliance consumption from wattage and operating hours. Actual appliance-level measurements require suitable monitoring hardware."
+        ],
+        [
+          "How can SmartWatts help me save electricity?",
+          "It helps you understand your consumption, estimate appliance costs, monitor your budget, and follow energy-saving recommendations. Daily quests and check-ins also reward you with Watts Coins."
+        ],
+        [
+          "Can my landlord see my appliances?",
+          "No. Appliances, schedules, savings plans, and AI chats are private to your account, even when you rent through SmartWatts Rentals."
+        ]
+      ]
+    }
+  ],
+  "references": [
+    [
+      "Meralco – Frequently Asked Questions",
+      "https://www.meralco.com.ph/help/faqs"
+    ],
+    [
+      "Meralco – Understand Your Bill",
+      "https://www.meralco.com.ph/residential/understand-your-bill"
+    ],
+    [
+      "Meralco – Understanding Your Meter",
+      "https://www.meralco.com.ph/residential/understand-your-bill/about-your-meter"
+    ],
+    [
+      "ERC – Consumer Information",
+      "https://erc.gov.ph/SectorPage/Consumer"
+    ]
+  ]
+}
