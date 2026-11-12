@@ -61,12 +61,12 @@ def test_bad_cron_hash_is_rejected():
         load_security_settings({"SMARTWATTS_ENV": "development", "CRON_API_KEY_SHA256": "not-a-hash"})
 
 
-def test_app_startup_fails_in_production_without_secrets():
+def test_app_startup_fails_in_production_without_secrets(tmp_path):
     backend = Path(__file__).resolve().parents[1]
     env = {k: v for k, v in os.environ.items() if k not in GOOD and not k.startswith("UPSTASH")}
-    env.update({"SMARTWATTS_ENV": "production", "PYTHONPATH": str(backend)})
-    # Run from an empty folder so no local .env file is picked up by load_dotenv().
-    result = subprocess.run([sys.executable, "-c", "import app.main"], cwd=backend / "tests",
+    # Present-but-empty values: load_dotenv() never overrides them with a developer's local .env file.
+    env.update({"SMARTWATTS_ENV": "production", "PYTHONPATH": str(backend), "BOT_SECRET": "", "ALLOWED_HOSTS": ""})
+    result = subprocess.run([sys.executable, "-c", "import app.main"], cwd=tmp_path,
                             env=env, capture_output=True, text=True, timeout=120)
     assert result.returncode != 0
     assert "MissingSecretError" in result.stderr and "BOT_SECRET is missing" in result.stderr

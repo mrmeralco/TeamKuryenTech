@@ -102,10 +102,15 @@ def load_security_settings(env: Mapping[str, str] | None = None) -> SecuritySett
     shield = production if shield_flag == "" else shield_flag in {"1", "true", "on", "yes"}
     default_ip_header = "x-vercel-forwarded-for" if env.get("VERCEL") else ""
 
+    # The deployment's own Vercel URLs (system env vars) are always accepted, so preview deployments keep working.
+    vercel_hosts = _csv(",".join(env.get(name, "") for name in
+                                 ("VERCEL_URL", "VERCEL_BRANCH_URL", "VERCEL_PROJECT_PRODUCTION_URL")))
+    allowed_hosts = tuple(dict.fromkeys(_csv(env.get("ALLOWED_HOSTS")) + vercel_hosts))
+
     return SecuritySettings(
         production=production,
         bot_secret=bot_secret.encode(),
-        allowed_hosts=_csv(env.get("ALLOWED_HOSTS")),
+        allowed_hosts=allowed_hosts,
         upstash_url=env.get("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/"),
         upstash_token=env.get("UPSTASH_REDIS_REST_TOKEN", "").strip(),
         cron_key_sha256=cron_hash,

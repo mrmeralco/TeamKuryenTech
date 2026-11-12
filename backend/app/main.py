@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 load_dotenv()
 
+from .security import site  # noqa: E402
 from .security.middleware import SecurityMiddleware  # noqa: E402
 from .security.settings import load_security_settings  # noqa: E402
 
@@ -458,3 +459,9 @@ async def analyze_appliance_label(request: ApplianceVisionRequest, _user: AuthUs
         confidence=confidence,
         notes=str(data["notes"]).strip() if data.get("notes") else None,
     )
+
+
+# Last route (must stay at the end of this file): the built web app (pages + static files, see security/site.py)
+# and a plain 404 for unknown /api paths.
+app.add_api_route("/{full_path:path}", site.serve, methods=["GET", "HEAD", "POST", "PUT", "PATCH"],
+                  include_in_schema=False)
