@@ -161,11 +161,17 @@ test("owner sets up a property, invites a tenant, bills them transparently, and 
   await expect(owner.locator("#content")).toContainText("Finalized");
 
   // Owner screens never show the tenant's private appliance data.
-  for (const page of ["Overview", "Units & Tenants", "Meter Readings", "Tenant Statements", "Audit Log"]) {
+  for (const page of ["Overview", "Property Analytics", "Units & Tenants", "Meter Readings", "Tenant Statements", "Audit Log"]) {
     await nav(owner, page);
     await expect(owner.locator('#content [data-slot] .muted-note:text("Loading…")')).toHaveCount(0);
     await expect(owner.locator("#content")).not.toContainText("Secret gaming PC");
   }
+
+  // Verify Property Analytics displays unit-level metrics and export control
+  await nav(owner, "Property Analytics");
+  await expect(owner.locator("#content")).toContainText("Unit-Level Electricity Analytics");
+  await expect(owner.locator("#content")).toContainText("Unit 1A");
+  await expect(owner.locator('button[data-act="export-property-analytics"]')).toBeVisible();
 
   // Tenant sees the finalized, clearly labelled statement.
   await nav(tenant, "My Statements");

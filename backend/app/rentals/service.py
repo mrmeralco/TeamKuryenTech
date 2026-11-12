@@ -247,29 +247,354 @@ class RentalService:
 
     def analytics(self, user: AuthUser, pid: str) -> dict:
         self._require(pid, user, MANAGERS)
-        units = self.store.query(self._col(pid, "units"), status="active")
-        occupancies = [o for o in self.store.query(self._col(pid, "occupancies")) if not o.get("endDate")]
-        bills = [b for b in self.store.query(self._col(pid, "utilityBills")) if b.get("status") == "active"]
-        bills.sort(key=lambda b: b["periodStart"])
-        statements = self.store.query(self._col(pid, "statements"), status="finalized")
-        per_unit: dict[str, dict] = {}
-        for statement in statements:
-            entry = per_unit.setdefault(statement["unitId"], {"unitId": statement["unitId"], "billedCentavos": 0, "measuredWh": 0})
-            entry["billedCentavos"] += statement["totalCentavos"]
-            entry["measuredWh"] += sum(
-                line["wh"] or 0 for line in statement["lines"] if line["consumptionKind"] != "not_individually_measured"
+        entitlement = self._require_entitlement(pid)
+        prop = self.store.get("properties", pid) or {"id": pid, "name": "Property", "address": ""}
+
+        all_units = self.store.query(self._col(pid, "units"))
+        active_units = [u for u in all_units if u.get("status") == "active"]
+        unit_labels = {u["id"]: u["label"] for u in all_units}
+
+        all_occupancies = self.store.query(self._col(pid, "occupancies"))
+        active_occupancies = [o for o in all_occupancies if not o.get("endDate")]
+        occupied_unit_ids = {o["unitId"] for o in active_occupancies}
+
+        meters = self.store.query(self._col(pid, "meters"))
+        meter_labels = {m["id"]: m["label"] for m in meters}
+        meters_by_kind = {
+            "utility_individual": len([m for m in meters if m.get("kind") == "utility_individual"]),
+            "utility_shared": len([m for m in meters if m.get("kind") == "utility_shared"]),
+            "private_submeter": len([m for m in meters if m.get("kind") == "private_submeter"]),
+        }
+
+        assignments = self.store.query(self._col(pid, "meterAssignments"))
+        unit_meters: dict[str, list[dict]] = {}
+        for a in assignments:
+            if not a.get("endDate"):
+                unit_meters.setdefault(a["unitId"], []).append({
+                    "meterId": a["meterId"],
+                    "meterLabel": meter_labels.get(a["meterId"], a["meterId"]),
+                })
+
+        all_bills = self.store.query(self._col(pid, "utilityBills"))
+        active_bills = [b for b in all_bills if b.get("status") == "active"]
+        active_bills.sort(key=lambda b: b["periodStart"])
+
+        all_readings = self.store.query(self._col(pid, "readings"))
+        active_readings = [r for r in all_readings if r.get("status") == "active"]
+
+        latest_bill = active_bills[-1] if active_bills else None
+        missing_readings_alerts = []
+        for m in meters:
+            m_readings = [r for r in active_readings if r.get("meterId") == m["id"] and r.get("verified")]
+            if not m_readings:
+                missing_readings_alerts.append({
+                    "meterId": m["id"],
+                    "meterLabel": m["label"],
+                    "kind": m.get("kind"),
+                    "issue": "No verified readings recorded for this meter.",
+                })
+            elif latest_bill:
+                has_recent = any(r.get("readingDate") >= latest_bill["periodStart"] for r in m_readings)
+                if not has_recent:
+                    missing_readings_alerts.append({
+                        "meterId": m["id"],
+                        "meterLabel": m["label"],
+                        "kind": m.get("kind"),
+                        "issue": f"Missing recent reading for billing period {latest_bill['periodStart']} to {latest_bill['periodEnd']}.",
+                    })
+
+        all_statements = self.store.query(self._col(pid, "statements"))
+        finalized_statements = [s for s in all_statements if s.get("status") == "finalized"]
+        draft_statements = [s for s in all_statements if s.get("status") == "draft"]
+        needs_review_statements = [s for s in all_statements if s.get("needsReview")]
+
+        total_official_wh = sum(b["totalWh"] for b in active_bills)
+        total_official_centavos = sum(b["amountCentavos"] for b in active_bills)
+        total_tenant_billed_centavos = sum(s["totalCentavos"] for s in finalized_statements)
+
+        total_measured_wh = 0
+        total_allocated_wh = 0
+        for s in finalized_statements:
+            for line in s.get("lines", []):
+                if line.get("consumptionKind") == "not_individually_measured" or line.get("chargeBasis") == "allocation_based_charge":
+                    total_allocated_wh += (line.get("wh") or 0)
+                else:
+                    total_measured_wh += (line.get("wh") or 0)
+
+        # Billing periods comparison
+        periods = []
+        for i, b in enumerate(active_bills):
+            p_statements = [s for s in finalized_statements if s.get("utilityBillId") == b["id"]]
+            p_drafts = [s for s in draft_statements if s.get("utilityBillId") == b["id"]]
+            p_measured_wh = sum(
+                line.get("wh") or 0
+                for s in p_statements
+                for line in s.get("lines", [])
+                if line.get("consumptionKind") != "not_individually_measured"
             )
-        labels = {u["id"]: u["label"] for u in self.store.query(self._col(pid, "units"))}
+            p_allocated_wh = sum(
+                line.get("wh") or 0
+                for s in p_statements
+                for line in s.get("lines", [])
+                if line.get("consumptionKind") == "not_individually_measured"
+            )
+            p_tenant_centavos = sum(s["totalCentavos"] for s in p_statements)
+
+            kwh_change_pct = None
+            cost_change_pct = None
+            if i > 0:
+                prev_b = active_bills[i - 1]
+                if prev_b.get("totalWh", 0) > 0:
+                    kwh_change_pct = round(((b["totalWh"] - prev_b["totalWh"]) / prev_b["totalWh"]) * 100, 1)
+                if prev_b.get("amountCentavos", 0) > 0:
+                    cost_change_pct = round(((b["amountCentavos"] - prev_b["amountCentavos"]) / prev_b["amountCentavos"]) * 100, 1)
+
+            periods.append({
+                "billId": b["id"],
+                "periodStart": b["periodStart"],
+                "periodEnd": b["periodEnd"],
+                "utilityTotalWh": b["totalWh"],
+                "utilityAmountCentavos": b["amountCentavos"],
+                "utilityKwh": round(b["totalWh"] / 1000, 2),
+                "tenantBilledCentavos": p_tenant_centavos,
+                "tenantMeasuredWh": p_measured_wh,
+                "tenantAllocatedWh": p_allocated_wh,
+                "finalizedCount": len(p_statements),
+                "draftCount": len(p_drafts),
+                "kwhChangePercent": kwh_change_pct,
+                "costChangePercent": cost_change_pct,
+            })
+
+        period_over_period = None
+        if len(periods) >= 2:
+            cur_p = periods[-1]
+            prev_p = periods[-2]
+            kwh_diff = cur_p["utilityKwh"] - prev_p["utilityKwh"]
+            cost_diff_centavos = cur_p["utilityAmountCentavos"] - prev_p["utilityAmountCentavos"]
+            period_over_period = {
+                "currentPeriod": f"{cur_p['periodStart']} to {cur_p['periodEnd']}",
+                "previousPeriod": f"{prev_p['periodStart']} to {prev_p['periodEnd']}",
+                "kwhChange": round(kwh_diff, 2),
+                "kwhChangePercent": cur_p["kwhChangePercent"],
+                "costChangeCentavos": cost_diff_centavos,
+                "costChangePercent": cur_p["costChangePercent"],
+            }
+
+        # Unit-level analytics
+        units_analytics = []
+        for u in sorted(all_units, key=lambda x: x.get("label", "").lower()):
+            uid = u["id"]
+            u_statements = [s for s in all_statements if s.get("unitId") == uid]
+            u_finalized = [s for s in u_statements if s.get("status") == "finalized"]
+            u_draft = [s for s in u_statements if s.get("status") == "draft"]
+
+            u_billed_centavos = sum(s["totalCentavos"] for s in u_finalized)
+            u_measured_wh = sum(
+                line.get("wh") or 0
+                for s in u_finalized
+                for line in s.get("lines", [])
+                if line.get("consumptionKind") != "not_individually_measured"
+            )
+            u_allocated_wh = sum(
+                line.get("wh") or 0
+                for s in u_finalized
+                for line in s.get("lines", [])
+                if line.get("consumptionKind") == "not_individually_measured"
+            )
+
+            u_history = []
+            for s in sorted(u_statements, key=lambda x: x.get("periodStart", "")):
+                s_measured = sum(line.get("wh") or 0 for line in s.get("lines", []) if line.get("consumptionKind") != "not_individually_measured")
+                s_allocated = sum(line.get("wh") or 0 for line in s.get("lines", []) if line.get("consumptionKind") == "not_individually_measured")
+                u_history.append({
+                    "id": s["id"],
+                    "periodStart": s["periodStart"],
+                    "periodEnd": s["periodEnd"],
+                    "status": s["status"],
+                    "totalCentavos": s["totalCentavos"],
+                    "measuredWh": s_measured,
+                    "allocatedWh": s_allocated,
+                    "needsReview": s.get("needsReview", False),
+                    "reviewReason": s.get("reviewReason"),
+                    "lines": s.get("lines", []),
+                })
+
+            u_change_pct = None
+            if len(u_history) >= 2:
+                latest_wh = u_history[-1]["measuredWh"] + u_history[-1]["allocatedWh"]
+                prior_wh = u_history[-2]["measuredWh"] + u_history[-2]["allocatedWh"]
+                if prior_wh > 0:
+                    u_change_pct = round(((latest_wh - prior_wh) / prior_wh) * 100, 1)
+
+            current_occ = next((o for o in active_occupancies if o["unitId"] == uid), None)
+            unit_occ_count = len([o for o in all_occupancies if o["unitId"] == uid])
+
+            units_analytics.append({
+                "unitId": uid,
+                "unitLabel": u.get("label", uid),
+                "status": u.get("status", "active"),
+                "isOccupied": uid in occupied_unit_ids,
+                "currentOccupancy": {
+                    "tenantUid": current_occ["tenantUid"],
+                    "startDate": current_occ["startDate"],
+                } if current_occ else None,
+                "occupancyCount": unit_occ_count,
+                "meters": unit_meters.get(uid, []),
+                "totalBilledCentavos": u_billed_centavos,
+                "totalMeasuredWh": u_measured_wh,
+                "totalAllocatedWh": u_allocated_wh,
+                "finalizedStatementsCount": len(u_finalized),
+                "draftStatementsCount": len(u_draft),
+                "consumptionChangePercent": u_change_pct,
+                "latestStatement": u_history[-1] if u_history else None,
+                "statements": u_history[-6:],
+            })
+
+        # Shared meters & allocations
+        shared_meters = []
+        for m in meters:
+            if m.get("kind") == "utility_shared":
+                submeters = [s for s in meters if s.get("parentMeterId") == m["id"]]
+                agreements = self.store.query(self._col(pid, "allocationAgreements"), meterId=m["id"])
+                shared_meters.append({
+                    "meterId": m["id"],
+                    "meterLabel": m["label"],
+                    "submeterCount": len(submeters),
+                    "submeters": [{"id": s["id"], "label": s["label"]} for s in submeters],
+                    "agreementsCount": len(agreements),
+                    "allocationMethodology": "Submeter deduction + explicit agreed share allocation",
+                    "legalNotice": billing.LEGAL_REVIEW_NOTICE,
+                })
+
+        # Monthly Trends (last 12 bills)
+        monthly_trends = []
+        for b in active_bills[-12:]:
+            p_statements = [s for s in finalized_statements if s.get("utilityBillId") == b["id"]]
+            p_measured = sum(line.get("wh") or 0 for s in p_statements for line in s.get("lines", []) if line.get("consumptionKind") != "not_individually_measured")
+            p_allocated = sum(line.get("wh") or 0 for s in p_statements for line in s.get("lines", []) if line.get("consumptionKind") == "not_individually_measured")
+            monthly_trends.append({
+                "period": f"{b['periodStart'][:7]}",
+                "periodStart": b["periodStart"],
+                "periodEnd": b["periodEnd"],
+                "utilityKwh": round(b["totalWh"] / 1000, 2),
+                "utilityCentavos": b["amountCentavos"],
+                "tenantMeasuredKwh": round(p_measured / 1000, 2),
+                "tenantAllocatedKwh": round(p_allocated / 1000, 2),
+                "tenantBilledCentavos": sum(s["totalCentavos"] for s in p_statements),
+            })
+
         return {
-            "unitCount": len(units),
-            "occupiedUnitCount": len({o["unitId"] for o in occupancies}),
-            "meterCount": len(self.store.query(self._col(pid, "meters"))),
+            "propertyId": pid,
+            "propertyName": prop.get("name", "Property"),
+            "address": prop.get("address"),
+            "entitlement": entitlement,
+            "unitCount": len(active_units),
+            "totalUnitCount": len(all_units),
+            "occupiedUnitCount": len(occupied_unit_ids),
+            "vacantUnitCount": max(0, len(active_units) - len(occupied_unit_ids)),
+            "occupancyRate": round((len(occupied_unit_ids) / len(active_units)) * 100, 1) if active_units else 0.0,
+            "meterCount": len(meters),
+            "metersByType": meters_by_kind,
+            "totalOfficialBilledCentavos": total_official_centavos,
+            "totalOfficialBilledWh": total_official_wh,
+            "totalTenantBilledCentavos": total_tenant_billed_centavos,
+            "totalTenantMeasuredWh": total_measured_wh,
+            "totalTenantAllocatedWh": total_allocated_wh,
+            "statementsSummary": {
+                "finalizedCount": len(finalized_statements),
+                "finalizedCentavos": total_tenant_billed_centavos,
+                "draftCount": len(draft_statements),
+                "draftCentavos": sum(s["totalCentavos"] for s in draft_statements),
+                "needsReviewCount": len(needs_review_statements),
+            },
             "bills": [
                 {"id": b["id"], "periodStart": b["periodStart"], "periodEnd": b["periodEnd"],
                  "totalWh": b["totalWh"], "amountCentavos": b["amountCentavos"], "meterId": b["meterId"]}
-                for b in bills[-12:]
+                for b in active_bills[-12:]
             ],
-            "finalizedByUnit": [{**entry, "unitLabel": labels.get(uid, uid)} for uid, entry in sorted(per_unit.items())],
+            "billingPeriods": periods,
+            "periodOverPeriod": period_over_period,
+            "unitsAnalytics": units_analytics,
+            "sharedMeters": shared_meters,
+            "missingReadingsAlerts": missing_readings_alerts,
+            "monthlyTrends": monthly_trends,
+            "legalNotice": billing.LEGAL_REVIEW_NOTICE,
+            "finalizedByUnit": [
+                {
+                    "unitId": u["unitId"],
+                    "unitLabel": u["unitLabel"],
+                    "billedCentavos": u["totalBilledCentavos"],
+                    "measuredWh": u["totalMeasuredWh"],
+                }
+                for u in units_analytics if u["totalBilledCentavos"] > 0 or u["totalMeasuredWh"] > 0
+            ],
+        }
+
+    def portfolio_analytics(self, user: AuthUser) -> dict:
+        memberships = self.store.query("memberships", uid=user.uid, status="active")
+        manager_memberships = [m for m in memberships if m.get("role") in MANAGERS]
+        if not manager_memberships:
+            return {
+                "totalProperties": 0,
+                "activePropertiesCount": 0,
+                "properties": [],
+                "activeProperties": [],
+                "portfolioTotals": None,
+                "message": "No managed properties found.",
+            }
+
+        properties_summary = []
+        active_properties = []
+        portfolio_wh = 0
+        portfolio_billed_centavos = 0
+        portfolio_tenant_centavos = 0
+        portfolio_units = 0
+        portfolio_occupied = 0
+
+        for m in manager_memberships:
+            pid = m["propertyId"]
+            prop = self.store.get("properties", pid)
+            if not prop:
+                continue
+            ent = self.entitlement(pid)
+            item = {
+                "propertyId": pid,
+                "propertyName": prop.get("name", "Property"),
+                "address": prop.get("address"),
+                "role": m.get("role"),
+                "entitlement": ent,
+                "unlocked": ent["active"],
+            }
+            if ent["active"]:
+                p_analytics = self.analytics(user, pid)
+                item["analytics"] = p_analytics
+                active_properties.append(p_analytics)
+                portfolio_wh += p_analytics["totalOfficialBilledWh"]
+                portfolio_billed_centavos += p_analytics["totalOfficialBilledCentavos"]
+                portfolio_tenant_centavos += p_analytics["totalTenantBilledCentavos"]
+                portfolio_units += p_analytics["unitCount"]
+                portfolio_occupied += p_analytics["occupiedUnitCount"]
+            properties_summary.append(item)
+
+        totals = None
+        if active_properties:
+            totals = {
+                "activePropertyCount": len(active_properties),
+                "totalUnits": portfolio_units,
+                "totalOccupiedUnits": portfolio_occupied,
+                "occupancyRate": round((portfolio_occupied / portfolio_units) * 100, 1) if portfolio_units else 0.0,
+                "portfolioConsumptionWh": portfolio_wh,
+                "portfolioConsumptionKwh": round(portfolio_wh / 1000, 2),
+                "portfolioUtilityBilledCentavos": portfolio_billed_centavos,
+                "portfolioTenantBilledCentavos": portfolio_tenant_centavos,
+            }
+
+        return {
+            "totalProperties": len(properties_summary),
+            "activePropertiesCount": len(active_properties),
+            "properties": properties_summary,
+            "activeProperties": active_properties,
+            "portfolioTotals": totals,
         }
 
     # ------------------------------------------------------------------ units

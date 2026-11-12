@@ -29,6 +29,11 @@ service cloud.firestore {
         || (request.resource.data[field] is string && request.resource.data[field].size() <= maxLength);
     }
 
+    function optionalTimestamp(field) {
+      return !(field in request.resource.data)
+        || request.resource.data[field] is timestamp;
+    }
+
     function isDateText(value) {
       return value is string && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
     }
@@ -103,6 +108,36 @@ service cloud.firestore {
         && d.monthlyKwhSaved is number && d.monthlyKwhSaved >= 0
         && d.monthlySavingsCentavos is int && d.monthlySavingsCentavos >= 0
         && d.ratePerKwhCentavos is number && d.ratePerKwhCentavos > 0;
+    }
+
+    // Profile: clients may store a display name and language preference only.
+    // `language` is accepted for compatibility with downloaded/older clients;
+    // the current app reads and writes `preferredLanguage`.
+    function validProfile() {
+      let d = request.resource.data;
+      return onlyKeys(['displayName', 'language', 'preferredLanguage', 'dwellingType', 'utilityRecordType', 'baselineKwh', 'baselinePeriodEnd', 'createdAt', 'updatedAt'])
+        && (('displayName' in d) || ('language' in d) || ('preferredLanguage' in d) || ('dwellingType' in d) || ('utilityRecordType' in d) || ('baselineKwh' in d))
+        && optionalText('displayName', 100)
+        && optionalText('language', 20)
+        && optionalText('preferredLanguage', 20)
+        && (!('dwellingType' in d) || d.dwellingType in ['homeowner', 'condo_apartment'])
+        && (!('utilityRecordType' in d) || d.utilityRecordType in ['meralco_bill', 'condo_soa', 'submeter_slip'])
+        && (!('baselineKwh' in d) || (d.baselineKwh is number && d.baselineKwh > 0 && d.baselineKwh <= 1000000))
+        && (!('baselinePeriodEnd' in d) || (d.baselinePeriodEnd is string && d.baselinePeriodEnd.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
+        && ((!('baselineKwh' in d) && !('baselinePeriodEnd' in d)) || (('baselineKwh' in d) && ('baselinePeriodEnd' in d)))
+        && ((!('dwellingType' in d) && !('utilityRecordType' in d))
+          || (('dwellingType' in d) && ('utilityRecordType' in d)
+            && ((d.dwellingType == 'homeowner' && d.utilityRecordType == 'meralco_bill')
+              || (d.dwellingType == 'condo_apartment' && d.utilityRecordType in ['condo_soa', 'submeter_slip']))))
+        && (!('language' in d) || d.language == null || d.language.matches('^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$'))
+        && (!('preferredLanguage' in d) || d.preferredLanguage == null || d.preferredLanguage.matches('^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$'))
+        && optionalTimestamp('createdAt')
+        && optionalTimestamp('updatedAt');
+    }
+
+    match /users/{userId} {
+      allow get: if isSelf(userId);
+      allow create, update: if isSelf(userId) && validProfile();
     }
 
     match /users/{userId}/readings/{readingId} {

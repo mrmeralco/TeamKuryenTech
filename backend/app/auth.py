@@ -14,7 +14,7 @@ import firebase_admin
 from fastapi import Depends, Header, HTTPException
 from firebase_admin import auth as firebase_auth
 from firebase_admin.exceptions import FirebaseError
-from google.auth.exceptions import DefaultCredentialsError
+from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
 
 
 @dataclass(frozen=True)
@@ -51,7 +51,7 @@ def require_user(authorization: Annotated[str | None, Header()] = None) -> AuthU
         raise HTTPException(status_code=401, detail="The Firebase sign-in token is invalid or expired.")
     except ValueError:
         raise HTTPException(status_code=401, detail="The Firebase sign-in token is invalid or expired.")
-    except (DefaultCredentialsError, FirebaseError) as error:
+    except (DefaultCredentialsError, GoogleAuthError, FirebaseError) as error:
         raise HTTPException(status_code=503, detail="Firebase token verification is unavailable.") from error
 
     provider = claims.get("firebase", {}).get("sign_in_provider", "")

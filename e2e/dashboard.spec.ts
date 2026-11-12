@@ -1,22 +1,59 @@
 import { expect, test } from "@playwright/test";
 
+test("notification bell opens, toggles closed, and closes on outside click", async ({ page }) => {
+  await page.goto("/");
+  const bell = page.locator("#notificationsBtn");
+  const popover = page.locator("#notificationPopover");
+  await bell.click();
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("Sample Usage Alert");
+  await expect(bell).toHaveAttribute("aria-expanded", "true");
+  await bell.click();
+  await expect(popover).toBeHidden();
+  await bell.click();
+  await page.locator("#pageTitle").click();
+  await expect(popover).toBeHidden();
+  await expect(bell).toHaveAttribute("aria-expanded", "false");
+});
+
+test("usage and analytics exports download CSV files and report a clear result", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('#navigation [data-page="history"]').click();
+  const [usageDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    page.locator('#content [data-action="download"]').first().click(),
+  ]);
+  expect(usageDownload.suggestedFilename()).toMatch(/^smartwatts-usage-record-\d+\.csv$/);
+  await expect(page.locator("#toast")).toContainText("Usage history downloaded successfully.");
+
+  await page.locator('#navigation [data-page="breakdown"]').click();
+  const [reportDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    page.locator('#content [data-action="export"]').click(),
+  ]);
+  expect(reportDownload.suggestedFilename()).toMatch(/^smartwatts-analytics-report-\d{4}-\d{2}-\d{2}\.csv$/);
+  await expect(page.locator("#exportNotice")).toContainText("Analytics report generated and downloaded.");
+});
+
 test("dashboard loads and chat supports Tagalog selection", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto("/");
   await page.evaluate(() => {
     localStorage.removeItem("smartwatts-game");
+    localStorage.removeItem("smartwatts-coins-guest");
     localStorage.removeItem("smartwatts-monthly-target");
     localStorage.removeItem("smartwatts-language");
     localStorage.removeItem("smartwatts-theme");
   });
   await page.reload();
   await expect(page.getByRole("heading", { name: "Good morning, Rean Justine!" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Complete quest/ })).toBeVisible();
-  await page.getByRole("button", { name: /Complete quest/ }).click();
-  await expect(page.locator(".game-stats")).toContainText("140");
+  await expect(page.getByRole("button", { name: "Check in to get coins" })).toBeDisabled();
+  await page.getByLabel("I completed one energy-saving habit today.").check();
+  await page.getByRole("button", { name: "Check in to get coins" }).click();
+  await expect(page.locator(".coin-checkin-card")).toContainText("Checked in today");
   await page.reload();
-  await expect(page.locator(".game-stats")).toContainText("140");
+  await expect(page.locator(".coin-checkin-card")).toContainText("Checked in today");
   await page.getByRole("button", { name: "Energy Goals" }).click();
   await expect(page.getByLabel("Monthly target (kWh)")).toHaveValue("320");
   await page.getByLabel("Monthly target (kWh)").fill("300");
@@ -25,13 +62,12 @@ test("dashboard loads and chat supports Tagalog selection", async ({ page }) => 
   await page.reload();
   await page.getByRole("button", { name: "Energy Goals" }).click();
   await expect(page.getByLabel("Monthly target (kWh)")).toHaveValue("300");
-  await page.getByRole("button", { name: /Claim/ }).first().click();
-  await expect(page.locator(".stats")).toContainText("170");
-  await page.getByRole("button", { name: "Rewards & Badges" }).click();
-  await expect(page.locator(".panel").filter({ hasText: "First Step" })).toContainText("✓ Unlocked");
-  const coolOperatorBadge = page.locator(".panel").filter({ hasText: "Cool Operator" });
-  await expect(coolOperatorBadge).toContainText("✓ Unlocked");
-  await expect(coolOperatorBadge).toContainText("2/8 earned");
+  await page.getByRole("button", { name: "Watts Coins", exact: true }).click();
+  await expect(page.locator("#pageTitle")).toHaveText("Watts Coins");
+  await expect(page.locator(".coin-balance-card")).toContainText("0.50 Watts Coins (₱0.50)");
+  await expect(page.locator(".coin-lock")).toContainText("Locked · Pending for Next Bill");
+  await page.getByRole("button", { name: "SPENDING" }).click();
+  await expect(page.locator(".coin-ledger")).toContainText("No coin transactions yet");
   await expect(page.getByRole("heading", { name: "Neighborhood leaderboard" })).toHaveCount(0);
   await page.getByRole("button", { name: "Chat with us" }).click();
   await page.getByLabel("Language", { exact: true }).selectOption("tl");
@@ -45,14 +81,14 @@ test("system language, usage ranges, and theme preferences work across pages", a
   await page.locator("#ui-language").selectOption("tl");
   await expect(page.getByRole("heading", { name: "Magandang umaga, Rean Justine!" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Mga Layunin sa Enerhiya" })).toBeVisible();
-  await expect(page.locator(".game-card")).toHaveAttribute("aria-label", "Progreso sa pagtitipid ng enerhiya");
-  await expect(page.locator(".week .day small")).toHaveText(["L", "M", "M", "H", "B", "S", "L"]);
+  await expect(page.locator(".game-card")).toHaveAttribute("aria-label", "Daily Watts Coins check-in");
+  await expect(page.locator(".coin-day small").first()).toHaveText("Ngayong Araw");
   const rangeOptions = await page.locator('[data-chart-range="dashboard"] option').allTextContents();
   expect(rangeOptions).toContain("Kada Tatlong Buwan");
   expect(rangeOptions).toContain("Taunan");
 
-  await page.getByRole("button", { name: "Mga Gantimpala at Badge" }).click();
-  await expect(page.getByRole("heading", { name: "Koleksiyon ng mga Badge" })).toBeVisible();
+  await page.getByRole("button", { name: "Watts Coins", exact: true }).click();
+  await expect(page.locator("#pageTitle")).toHaveText("Watts Coins");
   await expect(page.getByRole("heading", { name: /Neighborhood leaderboard/ })).toHaveCount(0);
 
   await page.locator('[data-page="history"]').click();

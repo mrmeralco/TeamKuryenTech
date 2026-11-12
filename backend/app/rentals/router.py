@@ -4,6 +4,9 @@ from functools import lru_cache
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from firebase_admin.exceptions import FirebaseError
+from google.api_core.exceptions import GoogleAPICallError
+from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
 
 from ..auth import AuthUser, require_permanent_user, require_user
 from .billing import BillingError
@@ -42,6 +45,11 @@ def _run(action, *args, **kwargs):
         raise HTTPException(status_code=error.status_code, detail=error.detail) from error
     except BillingError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except (GoogleAPICallError, GoogleAuthError, DefaultCredentialsError, FirebaseError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="SmartWatts Rentals database service is temporarily unavailable.",
+        ) from error
 
 
 @router.get("/plans")
@@ -57,6 +65,11 @@ def workspaces(user: User, service: Service):
 @router.post("/rentals/properties", status_code=201)
 def create_property(user: Permanent, service: Service, payload: Payload):
     return _run(service.create_property, user, payload)
+
+
+@router.get("/rentals/portfolio/analytics")
+def portfolio_analytics(user: Permanent, service: Service):
+    return _run(service.portfolio_analytics, user)
 
 
 @router.get("/rentals/properties/{pid}")

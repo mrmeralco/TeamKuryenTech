@@ -424,3 +424,122 @@ def test_rentals_service_never_touches_personal_user_collections(env):
     invite_tenant(client, pid, u1["id"])
     collections = set(service.store._data)  # noqa: SLF001 - test inspection
     assert not any(name.startswith("users/") or name == "users" for name in collections)
+
+
+def test_database_exceptions_return_http_503(env):
+    from unittest.mock import MagicMock
+    from google.api_core.exceptions import GoogleAPICallError
+
+    client, _, service = env
+    # Mock store to simulate a Google Cloud API error
+    mock_store = MagicMock()
+    mock_store.query.side_effect = GoogleAPICallError("Network failure")
+    service.store = mock_store
+
+    res = client.get("/api/account/workspaces", headers=OWNER)
+    assert res.status_code == 503
+    assert res.json()["detail"] == "SmartWatts Rentals database service is temporarily unavailable."
+
+
+# ---------------------------------------------------- property & portfolio analytics
+def test_property_analytics_subscription_enforcement_and_role_access(env):
+    client, _, _ = env
+    # 1. Inactive property blocks analytics with 402 PaymentRequired
+    inactive_pid = make_property(client, OWNER, activate=False)
+    res_inactive = client.get(f"{base(inactive_pid)}/analytics", headers=OWNER)
+    assert res_inactive.status_code == 402
+    assert "subscription is not active" in res_inactive.json()["detail"]
+
+    # 2. Active property succeeds for owner
+    active_pid = make_property(client, OWNER, activate=True)
+    unit = ok(client.post(f"{base(active_pid)}/units", headers=OWNER, json={"label": "1A"}), 201)
+    invite_tenant(client, active_pid, unit["id"])
+
+    res_owner = ok(client.get(f"{base(active_pid)}/analytics", headers=OWNER))
+    assert res_owner["propertyId"] == active_pid
+    assert res_owner["unitCount"] == 1
+    assert res_owner["occupiedUnitCount"] == 1
+    assert res_owner["vacantUnitCount"] == 0
+    assert res_owner["occupancyRate"] == 100.0
+
+    # 3. Tenant on this property is denied owner analytics with 403 Forbidden
+    res_tenant = client.get(f"{base(active_pid)}/analytics", headers=TENANT)
+    assert res_tenant.status_code == 403
+
+    # 4. Stranger is denied with 404 Not Found
+    res_stranger = client.get(f"{base(active_pid)}/analytics", headers=STRANGER)
+    assert res_stranger.status_code == 404
+
+
+def test_property_analytics_aggregates_billing_units_and_trends(env):
+    client, _, _ = env
+    pid, (u1, u2), main, (s1, s2) = submeter_property(client)
+    invite_tenant(client, pid, u1["id"], TENANT)
+    invite_tenant(client, pid, u2["id"], TENANT2)
+
+    # Readings for submeters: s1: 0 -> 100 kWh, s2: 0 -> 150 kWh
+    reading(client, pid, s1["id"], "2026-09-01", "0")
+    reading(client, pid, s1["id"], "2026-09-30", "100")
+    reading(client, pid, s2["id"], "2026-09-01", "0")
+    reading(client, pid, s2["id"], "2026-09-30", "150")
+
+    bill = ok(client.post(f"{base(pid)}/utility-bills", headers=OWNER, json={
+        "meterId": main["id"], "periodStart": "2026-09-01", "periodEnd": "2026-09-30", "totalKwh": "250.0", "amountCentavos": 300_000,
+    }), 201)
+
+    ok(client.post(f"{base(pid)}/utility-bills/{bill['id']}/statements", headers=OWNER), 201)
+    statements = ok(client.get(f"{base(pid)}/statements", headers=OWNER))
+    assert len(statements) == 2
+    # Finalize statement for u1
+    s1_stmt = next(s for s in statements if s["unitId"] == u1["id"])
+    ok(client.post(f"{base(pid)}/statements/{s1_stmt['id']}/finalize", headers=OWNER))
+
+    analytics = ok(client.get(f"{base(pid)}/analytics", headers=OWNER))
+    assert analytics["totalOfficialBilledCentavos"] == 300_000
+    assert analytics["totalOfficialBilledWh"] == 250_000
+    assert analytics["totalTenantBilledCentavos"] == s1_stmt["totalCentavos"]
+    assert analytics["statementsSummary"]["finalizedCount"] == 1
+    assert analytics["statementsSummary"]["draftCount"] == 1
+
+    # Units analytics
+    u1_analytics = next(u for u in analytics["unitsAnalytics"] if u["unitId"] == u1["id"])
+    assert u1_analytics["unitLabel"] == "1A"
+    assert u1_analytics["isOccupied"] is True
+    assert u1_analytics["totalBilledCentavos"] == s1_stmt["totalCentavos"]
+    assert u1_analytics["totalMeasuredWh"] == 100_000
+
+    u2_analytics = next(u for u in analytics["unitsAnalytics"] if u["unitId"] == u2["id"])
+    assert u2_analytics["unitLabel"] == "1B"
+    assert u2_analytics["isOccupied"] is True
+    assert u2_analytics["draftStatementsCount"] == 1
+
+    # Shared meter accuracy and legal review notice
+    assert len(analytics["sharedMeters"]) == 1
+    assert "legal/regulatory review" in analytics["sharedMeters"][0]["legalNotice"]
+
+
+def test_portfolio_analytics_aggregates_multiple_properties(env):
+    client, _, _ = env
+    pid1 = make_property(client, OWNER, activate=True, name="Sunny Hills")
+    ok(client.post(f"{base(pid1)}/units", headers=OWNER, json={"label": "A1"}), 201)
+
+    pid2 = make_property(client, OWNER, activate=True, name="Ocean Breeze")
+    ok(client.post(f"{base(pid2)}/units", headers=OWNER, json={"label": "B1"}), 201)
+    ok(client.post(f"{base(pid2)}/units", headers=OWNER, json={"label": "B2"}), 201)
+
+    pid_inactive = make_property(client, OWNER, activate=False, name="Inactive Villa")
+
+    # Call portfolio analytics
+    portfolio = ok(client.get("/api/rentals/portfolio/analytics", headers=OWNER))
+    assert portfolio["totalProperties"] == 3
+    assert portfolio["activePropertiesCount"] == 2
+    assert portfolio["portfolioTotals"]["totalUnits"] == 3
+    assert portfolio["portfolioTotals"]["activePropertyCount"] == 2
+
+    # Verify inactive property is not unlocked
+    inactive_item = next(p for p in portfolio["properties"] if p["propertyId"] == pid_inactive)
+    assert inactive_item["unlocked"] is False
+
+    # Tenant has 0 managed properties
+    tenant_portfolio = ok(client.get("/api/rentals/portfolio/analytics", headers=TENANT))
+    assert tenant_portfolio["totalProperties"] == 0

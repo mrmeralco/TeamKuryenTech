@@ -66,34 +66,387 @@ function overviewPage(ctx) {
 }
 
 async function loadOverview(ctx, root) {
-  const [property, analytics] = await Promise.all([propertyHeader(root), apiGet(`${base()}/analytics`)]);
+  const property = await propertyHeader(root);
   const e = property.entitlement;
-  fill(root, "overview", `
+  let analytics = null;
+  if (e?.active) {
+    try {
+      analytics = await apiGet(`${base()}/analytics`);
+    } catch {
+      // Inactive or error
+    }
+  }
+
+  if (analytics) {
+    fill(root, "overview", `
+      <div class="grid stats">
+        ${ctx.stat("layout-dashboard", "Units", analytics.unitCount, "", `${analytics.occupiedUnitCount} occupied`, "")}
+        ${ctx.stat("gauge", "Meters", analytics.meterCount, "", "Registered", "")}
+        ${ctx.stat("receipt", "Utility bills", analytics.bills.length, "", "Recent official bills", "")}
+        ${ctx.stat("badge-dollar-sign", "Subscription", e.active ? "Active" : e.status, "", `${formatPeso(e.priceCentavos)} / month · up to ${e.unitLimit} units`, "")}
+      </div>
+      <div class="two-panels">
+        ${ctx.panel(`Property <small translate="no">${ctx.escape(property.name)}</small>`, `<div class="detail-list">
+          <div class="detail-row"><span>Address</span><b>${user(property.address)}</b></div>
+          <div class="detail-row"><span>Your role</span><b>${property.role === "owner" ? "Owner" : "Administrator"}</b></div>
+        </div>`)}
+        ${ctx.panel("Recent official bills", table(
+          ["Period", "kWh", "Amount"],
+          analytics.bills.map((b) => [`${user(b.periodStart)} – ${user(b.periodEnd)}`, `${whToKwh(b.totalWh)} ${kindBadge("official_utility_bill")}`, formatPeso(b.amountCentavos)]),
+          "No bills recorded yet.",
+        ))}
+      </div>
+      <div style="margin-top:14px">${ctx.panel("Property billing calendar", calendarSection(ctx, `owner-${pid()}`, analytics.bills.map((b) => ({
+        periodStart: b.periodStart, periodEnd: b.periodEnd, kwh: b.totalWh / 1000, amountCentavos: b.amountCentavos, kind: "recorded",
+      }))))}</div>
+      <div style="margin-top:14px">${ctx.panel("Finalized statements by unit", table(
+        ["Unit", "Measured consumption", "Total billed"],
+        analytics.finalizedByUnit.map((u) => [user(u.unitLabel), `${whToKwh(u.measuredWh)} kWh`, formatPeso(u.billedCentavos)]),
+        "No finalized statements yet.",
+      ))}</div>`);
+  } else {
+    const [units, meters, bills] = await Promise.all([
+      apiGet(`${base()}/units`),
+      apiGet(`${base()}/meters`),
+      apiGet(`${base()}/utility-bills`),
+    ]);
+    fill(root, "overview", `
+      <div class="grid stats">
+        ${ctx.stat("layout-dashboard", "Units", units.length, "", "Registered units", "")}
+        ${ctx.stat("gauge", "Meters", meters.length, "", "Registered meters", "")}
+        ${ctx.stat("receipt", "Utility bills", bills.length, "", "Saved utility bills", "")}
+        ${ctx.stat("badge-dollar-sign", "Subscription", e?.status ?? "Inactive", "", `${formatPeso(e?.priceCentavos ?? 29900)} / month · up to ${e?.unitLimit ?? 10} units`, "")}
+      </div>
+      <div class="two-panels">
+        ${ctx.panel(`Property Setup <small translate="no">${ctx.escape(property.name)}</small>`, `<div class="detail-list">
+          <div class="detail-row"><span>Address</span><b>${user(property.address)}</b></div>
+          <div class="detail-row"><span>Your role</span><b>${property.role === "owner" ? "Owner" : "Administrator"}</b></div>
+          <div class="detail-row"><span>Subscription</span><b>${user(e?.status ?? "inactive")} (setup state)</b></div>
+        </div>
+        <div style="margin-top:12px;">
+          <p class="muted-note">This property is in free setup state. Your units, meters, and bills are preserved. Subscribe to unlock billing calculations, tenant statement publishing, and Property Analytics.</p>
+          <button class="primary" data-page="rental-subscription">View Subscription</button>
+        </div>`)}
+        ${ctx.panel("Saved official bills", table(
+          ["Period", "kWh", "Amount"],
+          bills.map((b) => [`${user(b.periodStart)} – ${user(b.periodEnd)}`, `${whToKwh(b.totalWh)} ${kindBadge("official_utility_bill")}`, formatPeso(b.amountCentavos)]),
+          "No bills recorded yet.",
+        ))}
+      </div>`);
+  }
+}
+
+// ------------------------------------------------------------ analytics
+let currentAnalyticsData = null;
+let currentPortfolioData = null;
+let currentAnalyticsState = {
+  viewMode: "property",
+  unitId: "all",
+  period: "all",
+};
+
+function analyticsPage(ctx) {
+  return `${ctx.pageHead("Property Analytics", "Unit-level electricity usage, official billing totals, and tenant statements.")}
+    ${slot("entitlement", "")}${legal()}${slot("analytics-content")}`;
+}
+
+async function loadAnalytics(ctx, root) {
+  const property = await propertyHeader(root);
+  const e = property.entitlement;
+  if (!e?.active) {
+    fill(root, "analytics-content", `
+      <div class="panel" style="text-align: center; padding: 48px 24px;">
+        <div style="font-size: 42px; margin-bottom: 12px;">🔒</div>
+        <h3 style="font-size: 20px; margin-bottom: 8px;">Property Analytics Requires an Active Subscription</h3>
+        <p class="muted-note" style="max-width: 560px; margin: 0 auto 20px; line-height: 1.6;">
+          Property Analytics provides unit-level electricity usage, official billing totals, period-over-period trend comparisons, shared meter reconciliations, and tenant statement breakdowns. Your property records remain preserved.
+        </p>
+        <button class="btn btn-primary" data-page="rental-subscription">View Subscription (₱299 / property / month)</button>
+      </div>`);
+    return;
+  }
+
+  try {
+    const [analytics, portfolio] = await Promise.all([
+      apiGet(`${base()}/analytics`),
+      apiGet("/api/rentals/portfolio/analytics").catch(() => null),
+    ]);
+    currentAnalyticsData = analytics;
+    currentPortfolioData = portfolio;
+    currentAnalyticsState = { viewMode: "property", unitId: "all", period: "all" };
+    renderAnalyticsView(ctx, root);
+
+    root.addEventListener("change", (event) => {
+      if (event.target.id === "rentalAnalyticsPeriodSelect") {
+        currentAnalyticsState.period = event.target.value;
+        renderAnalyticsView(ctx, root);
+      } else if (event.target.id === "rentalAnalyticsUnitSelect") {
+        currentAnalyticsState.unitId = event.target.value;
+        renderAnalyticsView(ctx, root);
+      }
+    });
+  } catch (error) {
+    fill(root, "analytics-content", notice("danger", `Could not load analytics: ${ctx.escape(errorMessage(error))}`));
+  }
+}
+
+function renderAnalyticsView(ctx, root) {
+  const a = currentAnalyticsData;
+  const portfolio = currentPortfolioData;
+  const state = currentAnalyticsState;
+  if (!a) return;
+
+  const hasMultipleProps = Boolean(portfolio && portfolio.totalProperties > 1);
+
+  if (state.viewMode === "portfolio" && portfolio && portfolio.portfolioTotals) {
+    const pt = portfolio.portfolioTotals;
+    const viewSwitch = hasMultipleProps ? `
+      <div class="toolbar" style="margin-bottom: 14px; justify-content: space-between;">
+        <div style="display:flex; gap: 8px;">
+          <button class="btn btn-outline" data-act="analytics-switch-view" data-view="property">This Property (${ctx.escape(a.propertyName)})</button>
+          <button class="btn btn-primary" data-act="analytics-switch-view" data-view="portfolio">Portfolio View (${portfolio.activePropertiesCount} active)</button>
+        </div>
+      </div>` : "";
+
+    fill(root, "analytics-content", `
+      ${viewSwitch}
+      <div class="grid stats">
+        ${ctx.stat("building-2", "Managed properties", portfolio.totalProperties, "", `${portfolio.activePropertiesCount} active · ${portfolio.totalProperties - portfolio.activePropertiesCount} inactive`, "")}
+        ${ctx.stat("layout-dashboard", "Portfolio units", pt.totalUnits, "", `${pt.totalOccupiedUnits} occupied · ${pt.occupancyRate}% rate`, "")}
+        ${ctx.stat("activity", "Portfolio energy", `${pt.portfolioConsumptionKwh} kWh`, "", "Measured & official utility usage", "")}
+        ${ctx.stat("receipt", "Official utility bills", formatPeso(pt.portfolioUtilityBilledCentavos), "", `Tenant billed: ${formatPeso(pt.portfolioTenantBilledCentavos)}`, "")}
+      </div>
+      <div style="margin-top: 14px;">
+        ${ctx.panel("Properties in your portfolio", table(
+          ["Property", "Role", "Units", "Occupancy", "Utility Billed", "Tenant Billed", "Subscription Status"],
+          portfolio.properties.map((p) => [
+            `<b>${user(p.propertyName)}</b><div class="muted-note">${user(p.address || "No address")}</div>`,
+            p.role === "owner" ? "Owner" : "Administrator",
+            p.unlocked ? `${p.analytics.unitCount} units` : `Up to ${p.entitlement.unitLimit} units`,
+            p.unlocked ? `${p.analytics.occupancyRate}% (${p.analytics.occupiedUnitCount}/${p.analytics.unitCount})` : "—",
+            p.unlocked ? formatPeso(p.analytics.totalOfficialBilledCentavos) : "🔒 Locked",
+            p.unlocked ? formatPeso(p.analytics.totalTenantBilledCentavos) : "🔒 Locked",
+            p.unlocked ? `<span class="status">Active</span>` : `<span class="status off">${user(p.entitlement.status)}</span>`,
+          ]),
+          "No properties in portfolio.",
+        ))}
+      </div>`);
+    return;
+  }
+
+  let displayedUnits = a.unitsAnalytics;
+  if (state.unitId !== "all") {
+    displayedUnits = a.unitsAnalytics.filter((u) => u.unitId === state.unitId);
+  }
+  const selectedUnit = state.unitId !== "all" ? a.unitsAnalytics.find((u) => u.unitId === state.unitId) : null;
+
+  const viewSwitch = hasMultipleProps ? `
+    <div style="display:flex; gap: 8px;">
+      <button class="btn btn-primary" data-act="analytics-switch-view" data-view="property">This Property (${ctx.escape(a.propertyName)})</button>
+      <button class="btn btn-outline" data-act="analytics-switch-view" data-view="portfolio">Portfolio View (${portfolio.activePropertiesCount} active)</button>
+    </div>` : `<div></div>`;
+
+  const periodOptions = `<option value="all">All Billing Periods (${a.billingPeriods.length})</option>` +
+    a.billingPeriods.map((p) => `<option value="${p.billId}"${state.period === p.billId ? " selected" : ""}>${p.periodStart} – ${p.periodEnd} (${p.utilityKwh} kWh)</option>`).join("");
+
+  const unitOptions = `<option value="all">All Units (${a.unitsAnalytics.length})</option>` +
+    a.unitsAnalytics.map((u) => `<option value="${u.unitId}"${state.unitId === u.unitId ? " selected" : ""}>${user(u.unitLabel)} (${u.isOccupied ? "Occupied" : "Vacant"})</option>`).join("");
+
+  let popHtml = "";
+  if (a.periodOverPeriod) {
+    const pop = a.periodOverPeriod;
+    const kwhTone = pop.kwhChange <= 0 ? "style='color:#10b981;'" : "style='color:#f59e0b;'";
+    const costTone = pop.costChangeCentavos <= 0 ? "style='color:#10b981;'" : "style='color:#f59e0b;'";
+    popHtml = `
+      <div class="panel" style="margin-bottom: 14px;">
+        <div class="panel-head">
+          <h3>Period-over-Period Electricity Trends</h3>
+          <span class="kind-badge kind-official">Official Utility Trend</span>
+        </div>
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 10px;">
+          <div style="padding: 12px; background: var(--bg); border-radius: 8px;">
+            <small class="muted-note">Billing Periods Compared</small>
+            <div style="font-weight: 600; margin-top: 4px; font-size: 13px;">${pop.currentPeriod} <br><span class="muted-note">vs</span> ${pop.previousPeriod}</div>
+          </div>
+          <div style="padding: 12px; background: var(--bg); border-radius: 8px;">
+            <small class="muted-note">Consumption Change</small>
+            <div style="font-weight: 700; font-size: 18px; margin-top: 4px;" ${kwhTone}>
+              ${pop.kwhChange >= 0 ? "+" : ""}${pop.kwhChange} kWh (${pop.kwhChangePercent ?? 0}%)
+            </div>
+          </div>
+          <div style="padding: 12px; background: var(--bg); border-radius: 8px;">
+            <small class="muted-note">Utility Cost Change</small>
+            <div style="font-weight: 700; font-size: 18px; margin-top: 4px;" ${costTone}>
+              ${pop.costChangeCentavos >= 0 ? "+" : ""}${formatPeso(pop.costChangeCentavos)} (${pop.costChangePercent ?? 0}%)
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  let missingReadingsHtml = "";
+  if (a.missingReadingsAlerts && a.missingReadingsAlerts.length > 0) {
+    missingReadingsHtml = `
+      <div style="margin-bottom: 14px;">
+        ${notice("warning", `<b>Missing Meter Readings Detected:</b> ${a.missingReadingsAlerts.length} meter(s) require readings for billing periods.
+          <ul style="margin: 6px 0 0 16px; padding: 0;">
+            ${a.missingReadingsAlerts.map((m) => `<li><b>${user(m.meterLabel)}</b> (${user(m.kind)}): ${user(m.issue)}</li>`).join("")}
+          </ul>`)}
+      </div>`;
+  }
+
+  let sharedMeterHtml = "";
+  if (a.sharedMeters && a.sharedMeters.length > 0) {
+    sharedMeterHtml = `
+      <div style="margin-bottom: 14px;">
+        ${notice("info", `<b>Shared Meter Allocation Methodology:</b> ${a.sharedMeters.map((sm) => `<b>${user(sm.meterLabel)}</b>: Submeter deduction with ${sm.agreementsCount} explicit agreement(s)`).join("; ")}. <div class="muted-note">${user(a.legalNotice)}</div>`)}
+      </div>`;
+  }
+
+  const maxUnitWh = Math.max(...a.unitsAnalytics.map((u) => u.totalMeasuredWh + u.totalAllocatedWh), 1000);
+  const unitBarsHtml = `
+    <div class="panel" style="margin-bottom: 14px;">
+      <div class="panel-head">
+        <h3>Unit Consumption Comparison</h3>
+        <span class="kind-badge kind-measured">Verified Usage</span>
+      </div>
+      <p class="muted-note" style="margin-top: 4px;">Measured vs allocated electricity consumption per unit across billing periods.</p>
+      <div style="display: grid; gap: 10px; margin-top: 14px;">
+        ${a.unitsAnalytics.map((u) => {
+          const totalWh = u.totalMeasuredWh + u.totalAllocatedWh;
+          const pct = Math.min(100, Math.round((totalWh / maxUnitWh) * 100));
+          return `
+            <div>
+              <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 3px;">
+                <span><b>${user(u.unitLabel)}</b> ${u.isOccupied ? `<small class="muted-note">(Occupied)</small>` : `<small class="muted-note">(Vacant)</small>`}</span>
+                <span><b>${whToKwh(u.totalMeasuredWh)} kWh</b> measured ${u.totalAllocatedWh > 0 ? `<small class="muted-note">(+${whToKwh(u.totalAllocatedWh)} kWh allocated)</small>` : ""}</span>
+              </div>
+              <div class="progress" style="height: 10px; border-radius: 5px; background: var(--line);">
+                <span style="width: ${Math.max(4, pct)}%; background: ${u.totalAllocatedWh > 0 ? 'linear-gradient(90deg, var(--orange), #f59e0b)' : 'var(--orange)'}; border-radius: 5px;"></span>
+              </div>
+            </div>`;
+        }).join("")}
+      </div>
+    </div>`;
+
+  const st = a.statementsSummary;
+  const totalStatements = st.finalizedCount + st.draftCount;
+  const finPct = totalStatements > 0 ? Math.round((st.finalizedCount / totalStatements) * 100) : 0;
+  const draftPct = totalStatements > 0 ? Math.round((st.draftCount / totalStatements) * 100) : 0;
+  const statusBreakdownHtml = `
+    <div class="panel" style="margin-bottom: 14px;">
+      <div class="panel-head">
+        <h3>Tenant Statement Status</h3>
+        <span class="kind-badge kind-official">${totalStatements} Total Statements</span>
+      </div>
+      <div style="display: flex; gap: 14px; margin: 12px 0 8px;">
+        <div style="flex: 1;">
+          <div style="display: flex; justify-content: space-between; font-size: 13px;">
+            <span><b>Published (Finalized)</b></span>
+            <span><b>${st.finalizedCount}</b> (${formatPeso(st.finalizedCentavos)})</span>
+          </div>
+          <div class="progress" style="height: 8px; margin-top: 4px; background: var(--line);">
+            <span style="width: ${finPct}%; background: #10b981;"></span>
+          </div>
+        </div>
+        <div style="flex: 1;">
+          <div style="display: flex; justify-content: space-between; font-size: 13px;">
+            <span><b>Pending (Draft)</b></span>
+            <span><b>${st.draftCount}</b> (${formatPeso(st.draftCentavos)})</span>
+          </div>
+          <div class="progress" style="height: 8px; margin-top: 4px; background: var(--line);">
+            <span style="width: ${draftPct}%; background: #f59e0b;"></span>
+          </div>
+        </div>
+      </div>
+      ${st.needsReviewCount > 0 ? `<div class="muted-note" style="color: #dc2626;">⚠️ ${st.needsReviewCount} statement(s) require owner review due to meter reading changes or unassigned meters.</div>` : ""}
+    </div>`;
+
+  let unitDetailHtml = "";
+  if (selectedUnit) {
+    unitDetailHtml = `
+      <div class="panel" style="margin-bottom: 14px; border: 2px solid var(--orange);">
+        <div class="panel-head">
+          <h3>Unit Details: <span translate="no">${ctx.escape(selectedUnit.unitLabel)}</span></h3>
+          <button class="btn btn-outline" data-act="clear-unit-details">Close Details</button>
+        </div>
+        <div class="detail-list" style="margin: 10px 0;">
+          <div class="detail-row"><span>Status</span><b>${selectedUnit.isOccupied ? "Occupied" : "Vacant"}</b></div>
+          <div class="detail-row"><span>Assigned meters</span><b>${selectedUnit.meters.map((m) => user(m.meterLabel)).join(", ") || "None"}</b></div>
+          <div class="detail-row"><span>Total measured usage</span><b>${whToKwh(selectedUnit.totalMeasuredWh)} kWh</b></div>
+          <div class="detail-row"><span>Total allocated usage</span><b>${whToKwh(selectedUnit.totalAllocatedWh)} kWh</b></div>
+          <div class="detail-row"><span>Total billed to tenant</span><b>${formatPeso(selectedUnit.totalBilledCentavos)}</b></div>
+        </div>
+        <h4>Historical Statements for this Unit</h4>
+        ${table(
+          ["Period", "Measured", "Allocated", "Total Billed", "Status", "Review Notes"],
+          selectedUnit.statements.map((s) => [
+            `${user(s.periodStart)} – ${user(s.periodEnd)}`,
+            `${whToKwh(s.measuredWh)} kWh`,
+            `${whToKwh(s.allocatedWh)} kWh`,
+            formatPeso(s.totalCentavos),
+            s.status === "finalized" ? `<span class="status">Finalized</span>` : `<span class="status off">Draft</span>`,
+            s.needsReview ? `<span style="color:#dc2626;">${user(s.reviewReason || "Needs Review")}</span>` : "—",
+          ]),
+          "No statements generated for this unit yet.",
+        )}
+      </div>`;
+  }
+
+  fill(root, "analytics-content", `
+    <div class="toolbar" style="margin-bottom: 14px; justify-content: space-between; flex-wrap: wrap;">
+      ${viewSwitch}
+      <button class="btn btn-outline" data-act="export-property-analytics">
+        📥 Export Analytics (.csv)
+      </button>
+    </div>
+    <div class="panel" style="margin-bottom: 14px; padding: 12px 18px;">
+      <div style="display: flex; gap: 14px; flex-wrap: wrap; align-items: center;">
+        <div style="display:flex; align-items:center; gap: 8px;">
+          <label for="rentalAnalyticsPeriodSelect" style="font-weight: 600; font-size: 13px;">Billing period:</label>
+          <select id="rentalAnalyticsPeriodSelect" class="select" style="min-width: 220px;">
+            ${periodOptions}
+          </select>
+        </div>
+        <div style="display:flex; align-items:center; gap: 8px;">
+          <label for="rentalAnalyticsUnitSelect" style="font-weight: 600; font-size: 13px;">Unit filter:</label>
+          <select id="rentalAnalyticsUnitSelect" class="select" style="min-width: 180px;">
+            ${unitOptions}
+          </select>
+        </div>
+      </div>
+    </div>
     <div class="grid stats">
-      ${ctx.stat("layout-dashboard", "Units", analytics.unitCount, "", `${analytics.occupiedUnitCount} occupied`, "")}
-      ${ctx.stat("gauge", "Meters", analytics.meterCount, "", "Registered", "")}
-      ${ctx.stat("receipt", "Utility bills", analytics.bills.length, "", "Recent official bills", "")}
-      ${ctx.stat("badge-dollar-sign", "Subscription", e.active ? "Active" : e.status, "", `${formatPeso(e.priceCentavos)} / month · up to ${e.unitLimit} units`, "")}
+      ${ctx.stat("activity", "Measured electricity", `${whToKwh(a.totalTenantMeasuredWh)} kWh`, "", `${a.meterCount} meters registered`, "")}
+      ${ctx.stat("receipt", "Official utility bills", formatPeso(a.totalOfficialBilledCentavos), "", `${a.bills.length} bills · ${whToKwh(a.totalOfficialBilledWh)} kWh`, "")}
+      ${ctx.stat("users-round", "Unit occupancy", `${a.occupiedUnitCount} / ${a.unitCount}`, "", `${a.occupancyRate}% occupied · ${a.vacantUnitCount} available`, "")}
+      ${ctx.stat("badge-dollar-sign", "Tenant statements", formatPeso(a.totalTenantBilledCentavos), "", `${a.statementsSummary.finalizedCount} published · ${a.statementsSummary.draftCount} draft`, "")}
     </div>
+    ${popHtml}
+    ${missingReadingsHtml}
+    ${sharedMeterHtml}
     <div class="two-panels">
-      ${ctx.panel(`Property <small translate="no">${ctx.escape(property.name)}</small>`, `<div class="detail-list">
-        <div class="detail-row"><span>Address</span><b>${user(property.address)}</b></div>
-        <div class="detail-row"><span>Your role</span><b>${property.role === "owner" ? "Owner" : "Administrator"}</b></div>
-      </div>`)}
-      ${ctx.panel("Recent official bills", table(
-        ["Period", "kWh", "Amount"],
-        analytics.bills.map((b) => [`${user(b.periodStart)} – ${user(b.periodEnd)}`, `${whToKwh(b.totalWh)} ${kindBadge("official_utility_bill")}`, formatPeso(b.amountCentavos)]),
-        "No bills recorded yet.",
-      ))}
+      ${unitBarsHtml}
+      ${statusBreakdownHtml}
     </div>
-    <div style="margin-top:14px">${ctx.panel("Property billing calendar", calendarSection(ctx, `owner-${pid()}`, analytics.bills.map((b) => ({
-      periodStart: b.periodStart, periodEnd: b.periodEnd, kwh: b.totalWh / 1000, amountCentavos: b.amountCentavos, kind: "recorded",
-    }))))}</div>
-    <div style="margin-top:14px">${ctx.panel("Finalized statements by unit", table(
-      ["Unit", "Measured consumption", "Total billed"],
-      analytics.finalizedByUnit.map((u) => [user(u.unitLabel), `${whToKwh(u.measuredWh)} kWh`, formatPeso(u.billedCentavos)]),
-      "No finalized statements yet.",
-    ))}</div>`);
+    ${unitDetailHtml}
+    <div style="margin-top: 14px;">
+      ${ctx.panel("Unit-Level Electricity Analytics", table(
+        ["Unit", "Occupancy", "Assigned Meters", "Measured Usage", "Allocated Share", "Total Billed", "Trend", "Statements", "Action"],
+        displayedUnits.map((u) => [
+          `<b>${user(u.unitLabel)}</b>`,
+          u.isOccupied ? `<span class="status">Occupied</span>` : `<span class="status off">Vacant</span>`,
+          u.meters.map((m) => user(m.meterLabel)).join(", ") || `<span class="muted-note">None</span>`,
+          `${whToKwh(u.totalMeasuredWh)} kWh`,
+          `${whToKwh(u.totalAllocatedWh)} kWh`,
+          formatPeso(u.totalBilledCentavos),
+          u.consumptionChangePercent !== null ? `<span style="font-weight:600; color: ${u.consumptionChangePercent <= 0 ? '#10b981' : '#f59e0b'};">${u.consumptionChangePercent >= 0 ? '+' : ''}${u.consumptionChangePercent}%</span>` : `—`,
+          `${u.finalizedStatementsCount} published · ${u.draftStatementsCount} draft`,
+          `<button class="btn btn-outline" data-act="view-unit-details" data-unit-id="${u.unitId}">Details</button>`,
+        ]),
+        "No units match the filter.",
+      ))}
+    </div>`);
 }
 
 // ------------------------------------------------------- units & tenants
@@ -423,6 +776,7 @@ async function loadTenantMeters(_ctx, root) {
 // ------------------------------------------------------------ registries
 export const rentalPages = {
   "rental-overview": { title: "Property Overview", subtitle: "SmartWatts Rentals", render: overviewPage, load: loadOverview },
+  "rental-analytics": { title: "Property Analytics", subtitle: "SmartWatts Rentals", render: analyticsPage, load: loadAnalytics },
   "rental-units": { title: "Units & Tenants", subtitle: "SmartWatts Rentals", render: unitsPage, load: loadUnits },
   "rental-meters": { title: "Meters & Allocation", subtitle: "SmartWatts Rentals", render: metersPage, load: loadMeters },
   "rental-readings": { title: "Meter Readings", subtitle: "SmartWatts Rentals", render: readingsPage, load: loadReadings },
@@ -606,6 +960,74 @@ export const rentalActions = {
     await apiPost(`${base()}/subscription/request-activation`);
     ctx.toast("Activation requested. SmartWatts staff will contact you; no payment was taken.");
     ctx.render();
+  },
+  "analytics-switch-view"(button, ctx) {
+    currentAnalyticsState.viewMode = button.dataset.view;
+    const root = document.querySelector("#content");
+    if (root) renderAnalyticsView(ctx, root);
+  },
+  "view-unit-details"(button, ctx) {
+    currentAnalyticsState.unitId = button.dataset.unitId;
+    const root = document.querySelector("#content");
+    if (root) {
+      const select = root.querySelector("#rentalAnalyticsUnitSelect");
+      if (select) select.value = button.dataset.unitId;
+      renderAnalyticsView(ctx, root);
+      root.querySelector("#rentalAnalyticsUnitSelect")?.scrollIntoView({ behavior: "smooth" });
+    }
+  },
+  "clear-unit-details"(_button, ctx) {
+    currentAnalyticsState.unitId = "all";
+    const root = document.querySelector("#content");
+    if (root) {
+      const select = root.querySelector("#rentalAnalyticsUnitSelect");
+      if (select) select.value = "all";
+      renderAnalyticsView(ctx, root);
+    }
+  },
+  "export-property-analytics"(_button, ctx) {
+    if (!currentAnalyticsData) return;
+    const a = currentAnalyticsData;
+    const rows = [
+      `"SmartWatts Rentals Property Analytics Report"`,
+      `"Property","${a.propertyName.replace(/"/g, '""')}","Address","${(a.address || '').replace(/"/g, '""')}"`,
+      `"Export Date","${new Date().toISOString()}"`,
+      `"Legal Notice","${(a.legalNotice || '').replace(/"/g, '""')}"`,
+      `""`,
+      `"--- PROPERTY SUMMARY ---"`,
+      `"Metric","Value"`,
+      `"Total Units","${a.unitCount}"`,
+      `"Occupied Units","${a.occupiedUnitCount}"`,
+      `"Vacant Units","${a.vacantUnitCount}"`,
+      `"Occupancy Rate","${a.occupancyRate}%"`,
+      `"Total Measured Electricity (kWh)","${whToKwh(a.totalTenantMeasuredWh)}"`,
+      `"Total Official Utility Billed (PHP)","${(a.totalOfficialBilledCentavos / 100).toFixed(2)}"`,
+      `"Total Tenant Billed (PHP)","${(a.totalTenantBilledCentavos / 100).toFixed(2)}"`,
+      `"Published Finalized Statements","${a.statementsSummary.finalizedCount}"`,
+      `"Draft Statements","${a.statementsSummary.draftCount}"`,
+      `""`,
+      `"--- BILLING PERIODS COMPARISON ---"`,
+      `"Period Start","Period End","Utility kWh","Utility Charges (PHP)","Tenant Measured kWh","Tenant Allocated kWh","Tenant Total Charges (PHP)","kWh Change %","Cost Change %"`,
+      ...a.billingPeriods.map((p) =>
+        `"${p.periodStart}","${p.periodEnd}","${p.utilityKwh}","${(p.utilityAmountCentavos / 100).toFixed(2)}","${(p.tenantMeasuredWh / 1000).toFixed(2)}","${(p.tenantAllocatedWh / 1000).toFixed(2)}","${(p.tenantBilledCentavos / 100).toFixed(2)}","${p.kwhChangePercent ?? 'N/A'}","${p.costChangePercent ?? 'N/A'}"`
+      ),
+      `""`,
+      `"--- UNIT-LEVEL ELECTRICITY ANALYTICS ---"`,
+      `"Unit","Occupancy Status","Assigned Meters","Measured kWh","Allocated kWh","Total Charges (PHP)","Change %","Published Statements","Draft Statements"`,
+      ...a.unitsAnalytics.map((u) =>
+        `"${u.unitLabel.replace(/"/g, '""')}","${u.isOccupied ? 'Occupied' : 'Vacant'}","${u.meters.map((m) => m.meterLabel).join('; ').replace(/"/g, '""')}","${(u.totalMeasuredWh / 1000).toFixed(2)}","${(u.totalAllocatedWh / 1000).toFixed(2)}","${(u.totalBilledCentavos / 100).toFixed(2)}","${u.consumptionChangePercent ?? 'N/A'}","${u.finalizedStatementsCount}","${u.draftStatementsCount}"`
+      ),
+    ];
+    const blob = new Blob([rows.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `smartwatts-property-analytics-${a.propertyName.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    ctx.toast("Property analytics report exported successfully.");
   },
 };
 

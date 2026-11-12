@@ -1,8 +1,8 @@
 // SmartWatts Personal (Tier 1, free forever) screens plus account sign-in,
 // the plans page, and the entry point to SmartWatts Rentals.
 import {
-  deleteAppliance, deleteBill, deleteSavingsPlan, listAppliances, listBills, listSavingsPlans,
-  saveAppliance, saveBill, saveSavingsPlan, storageMode,
+  deleteAppliance, deleteBill, deleteSavingsPlan, ensureUserProfile, listAppliances, listBills, listSavingsPlans,
+  saveAppliance, saveBill, saveSavingsPlan, saveUserProfile, storageMode,
 } from "./src/lib/personal/store.ts";
 import { effectiveRateCentavosPerKwh, estimateMonthlyKwh, simulateSavings } from "./src/lib/personal/estimates.ts";
 import { extractBillFields, recognizeImage, redactBillText } from "./src/lib/ocr.ts";
@@ -395,6 +395,7 @@ function billsPage(ctx) {
             <div class="share-grid">${CHARGE_CATEGORIES.map((c) => `<label>${c.label}<input name="component:${c.id}" inputmode="decimal"></label>`).join("")}</div>
             <p class="muted-note">With a breakdown, the savings simulator can show savings per charge category.</p>
           </details>
+          <label class="field full bill-verification"><span><input name="verified" type="checkbox" required> I reviewed this bill or statement and confirm its billing period and kWh value are correct.</span></label>
           <div class="field full"><button class="btn btn-primary" type="submit">Save bill</button></div>
         </form>
         <div data-slot="ocr-review"></div>
@@ -494,6 +495,11 @@ function accountSecurityHtml() {
     <div class="two-panels">
       <form class="form-grid" data-form="account-create">
         <h4 class="full">Create account</h4>
+        ${field("Display Name", `<input name="displayName" type="text" required autocomplete="name" placeholder="e.g. Maria Santos">`, { full: true })}
+        ${field("Home setup", `<select name="dwellingType" required><option value="homeowner">Tier 1 · Personal homeowner</option><option value="condo_apartment">Tier 2 · Condo / apartment resident</option></select>`, { full: true })}
+        ${field("Monthly bill source", `<select name="utilityRecordType" required><option value="meralco_bill">Meralco electricity bill</option><option value="condo_soa">Condo / apartment statement of account</option><option value="submeter_slip">Sub-meter reading slip</option></select>`, { full: true })}
+        ${field("Baseline monthly consumption (kWh)", `<input name="baselineKwh" type="number" min="0.01" max="1000000" step="0.01" required inputmode="decimal" placeholder="e.g. 250">`, { full: true, hint: "Use the latest verified bill or statement so SmartWatts has a starting point." })}
+        ${field("Baseline billing period end", `<input name="baselinePeriodEnd" type="date" required>`, { full: true })}
         ${field("Email", `<input name="email" type="email" required autocomplete="email">`, { full: true })}
         ${field("Password", `<input name="password" type="password" minlength="8" required autocomplete="new-password">`, { full: true })}
         <div class="field full"><button class="btn btn-primary" type="submit">Create account &amp; keep my data</button></div>
@@ -662,6 +668,7 @@ export const personalForms = {
     });
     scannerState = null;
     ctx.toast("Appliance saved.");
+    window.dispatchEvent(new CustomEvent("smartwatts-appliance-saved", { detail: String(v.name) }));
     ctx.render();
   },
   async simulate(form, ctx) {
@@ -714,6 +721,7 @@ export const personalForms = {
     });
     lastSimulation = null;
     ctx.toast("Savings plan saved.");
+    window.dispatchEvent(new CustomEvent("smartwatts-plan-saved", { detail: String(formValues(form).title) }));
     ctx.render();
   },
   async "bill-save"(form, ctx) {
@@ -744,27 +752,73 @@ export const personalForms = {
     } else {
       ctx.toast("Bill saved.");
     }
+    window.dispatchEvent(new CustomEvent("smartwatts-bill-saved", { detail: { periodStart: v.periodStart, periodEnd: v.periodEnd, kwh: Number(String(v.kwh).replace(/,/g, "")), verified: v.verified === "on" } }));
     ctx.render();
   },
   async "account-create"(form, ctx) {
     const v = formValues(form);
+    const displayName = String(v.displayName || "").trim();
+    const baselineKwh = Number(v.baselineKwh);
+    if (!Number.isFinite(baselineKwh) || baselineKwh <= 0 || baselineKwh > 1_000_000) throw new Error("Enter a valid baseline monthly consumption in kWh.");
+    if (!["homeowner", "condo_apartment"].includes(String(v.dwellingType))) throw new Error("Choose your home setup.");
+    if (!["meralco_bill", "condo_soa", "submeter_slip"].includes(String(v.utilityRecordType))) throw new Error("Choose your monthly bill source.");
+    if (v.dwellingType === "homeowner" && v.utilityRecordType !== "meralco_bill") throw new Error("Homeowner baseline records must use a Meralco electricity bill.");
+    if (v.dwellingType === "condo_apartment" && v.utilityRecordType === "meralco_bill") throw new Error("Choose a condo statement or sub-meter slip for a condo or apartment setup.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v.baselinePeriodEnd))) throw new Error("Choose the end date of your baseline billing period.");
+    let registration;
     try {
-      await createPermanentAccount(String(v.email), String(v.password));
+      registration = await createPermanentAccount(String(v.email), String(v.password), displayName);
     } catch (error) {
       throw new Error(friendlyAuthError(error));
     }
-    ctx.toast("Account created. Check your inbox to verify your email.");
+
+    let profileSaved = false;
+    try {
+      profileSaved = await saveUserProfile({
+        displayName,
+        preferredLanguage: document.querySelector("#ui-language")?.value || "en",
+        dwellingType: String(v.dwellingType),
+        utilityRecordType: String(v.utilityRecordType),
+        baselineKwh,
+        baselinePeriodEnd: String(v.baselinePeriodEnd),
+      });
+    } catch {
+      profileSaved = false;
+    }
     await ctx.accountChanged();
+    if (!profileSaved) {
+      ctx.toast("Your account is signed in, but SmartWatts could not save your profile. Please retry after checking your connection.");
+      return;
+    }
+    if (!registration.verificationEmailSent) {
+      ctx.toast("Account created and profile saved, but Firebase could not send the verification email. You can retry from Account Settings.");
+      return;
+    }
+    if (!registration.displayNameUpdated) {
+      ctx.toast("Account created and profile saved, but Firebase could not update the Auth display name.");
+      return;
+    }
+    ctx.toast("Account created. Check your inbox to verify your email.");
   },
   async "account-sign-in"(form, ctx) {
     const v = formValues(form);
+    let signedInUser;
     try {
-      await signInPermanent(String(v.email), String(v.password));
+      signedInUser = await signInPermanent(String(v.email), String(v.password));
     } catch (error) {
       throw new Error(friendlyAuthError(error));
     }
-    ctx.toast("Signed in.");
+    let profileSaved = false;
+    try {
+      profileSaved = await ensureUserProfile({
+        displayName: signedInUser.displayName,
+        preferredLanguage: document.querySelector("#ui-language")?.value || "en",
+      });
+    } catch {
+      profileSaved = false;
+    }
     await ctx.accountChanged();
+    ctx.toast(profileSaved ? "Signed in." : "Signed in, but SmartWatts could not restore your profile. Please check your connection.");
   },
   async "property-create"(form, ctx) {
     const v = formValues(form);
@@ -884,12 +938,23 @@ export const personalActions = {
     ctx.render();
   },
   async "google-sign-in"(_button, ctx) {
+    let user;
     try {
-      await continueWithGoogle();
+      user = await continueWithGoogle();
     } catch (error) {
       throw new Error(friendlyAuthError(error));
     }
+    let profileSaved = false;
+    try {
+      profileSaved = await ensureUserProfile({
+        displayName: user.displayName,
+        preferredLanguage: document.querySelector("#ui-language")?.value || "en",
+      });
+    } catch {
+      profileSaved = false;
+    }
     await ctx.accountChanged();
+    ctx.toast(profileSaved ? "Signed in with Google." : "Signed in with Google, but SmartWatts could not restore your profile.");
   },
   async "sign-out"(_button, ctx) {
     await signOutAccount();
@@ -898,7 +963,11 @@ export const personalActions = {
     await ctx.accountChanged();
   },
   async "resend-verification"(_button, ctx) {
-    await resendVerification();
+    try {
+      await resendVerification();
+    } catch (error) {
+      throw new Error(friendlyAuthError(error));
+    }
     ctx.toast("Verification email sent.");
   },
   async "open-workspace"(button, ctx) {
