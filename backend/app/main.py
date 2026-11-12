@@ -116,7 +116,9 @@ class TranslationResponse(BaseModel):
     translations: list[str]
 
 
-app = FastAPI(title="SmartWatts API", version="2.0.0", dependencies=[Depends(validate_params)])
+# No interactive docs or OpenAPI schema in production: the API must not list its routes to strangers.
+_docs = {} if not SECURITY.production else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+app = FastAPI(title="SmartWatts API", version="2.0.0", dependencies=[Depends(validate_params)], **_docs)
 # Cross-origin access is only for local development (the Vite dev server). In production the site and the API
 # share one origin, so no CORS origins are allowed unless ALLOWED_ORIGINS lists them explicitly.
 _DEV_ORIGINS = "" if SECURITY.production else "http://localhost:5173,http://127.0.0.1:5173"

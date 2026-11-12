@@ -124,13 +124,17 @@ class SecurityMiddleware:
             return
 
         started = False
+        api = scope["path"].startswith("/api/")
 
         async def send_with_headers(message):
             nonlocal started
             if message["type"] == "http.response.start":
                 started = True
                 kept = [(k, v) for k, v in message.get("headers", [])
-                        if k.lower() not in REMOVED_HEADERS and k.lower() not in _SECURITY_KEYS]
+                        if k.lower() not in REMOVED_HEADERS and k.lower() not in _SECURITY_KEYS
+                        and not (api and k.lower() == b"cache-control")]
+                if api:  # signed-in data: a CDN or shared cache must never keep it
+                    kept.append((b"cache-control", b"private, no-store"))
                 message = {**message, "headers": kept + self._header_items}
             await send(message)
 
