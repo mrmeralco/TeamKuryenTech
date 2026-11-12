@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 load_dotenv()
 
+from .security.middleware import SecurityMiddleware  # noqa: E402
 from .security.settings import load_security_settings  # noqa: E402
 
 # Validated before anything else: production refuses to start with missing or weak secrets.
@@ -129,6 +130,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+# Added last, so it wraps everything else (including CORS): headers on every response, generic 500s.
+app.add_middleware(SecurityMiddleware, settings=SECURITY)
 
 app.include_router(rentals_router)
 app.include_router(email_otp_router)
