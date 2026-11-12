@@ -19,6 +19,38 @@ import { calendarActions, calendarPages } from "./calendar-view.js";
 import { getWorkspace, loadWorkspaces, setWorkspace, workspaceOptions } from "./workspace.js";
 import { currentAccount, onAccountChange } from "./src/lib/account.ts";
 import { escapeHtml } from "./src/lib/format.ts";
+import { auth } from "./src/lib/firebase.ts";
+
+// Signed-in user's profile (Google name/photo or the name entered at registration).
+function userProfile() {
+  const user = auth?.currentUser;
+  const signedIn = Boolean(user && !user.isAnonymous);
+  const email = signedIn ? user.email ?? "" : "";
+  const name = (signedIn && user.displayName?.trim()) || (email ? email.split("@")[0] : "");
+  const parts = name.split(/\s+/).filter(Boolean);
+  return {
+    signedIn,
+    name,
+    firstName: parts.length > 1 ? parts.slice(0, -1).join(" ") : parts[0] ?? "",
+    lastName: parts.length > 1 ? parts[parts.length - 1] : "",
+    email,
+    phone: (signedIn && user.phoneNumber) || "",
+    photo: (signedIn && user.photoURL) || "",
+    provider: signedIn && user.providerData.some((p) => p.providerId === "google.com") ? "Google" : "Email",
+  };
+}
+
+// Good morning (5–11), noon (12), afternoon (13–17), evening (18–4).
+function greeting(date = new Date()) {
+  const hour = date.getHours();
+  const period = hour >= 5 && hour < 12 ? "morning" : hour === 12 ? "noon" : hour >= 13 && hour < 18 ? "afternoon" : "evening";
+  const firstName = userProfile().firstName;
+  if (getLanguage() === "tl") {
+    const tl = { morning: "Magandang umaga", noon: "Magandang tanghali", afternoon: "Magandang hapon", evening: "Magandang gabi" }[period];
+    return firstName ? `${tl}, ${firstName}!` : `${tl}!`;
+  }
+  return firstName ? `Good ${period}, ${firstName}!` : `Good ${period}!`;
+}
 
 // Navigation and screen copy
 // Tier 1 — SmartWatts Personal (free forever)
@@ -240,7 +272,7 @@ function renderNavigation() {
 
 function renderPageHeading() {
   const [title, subtitle] = pageTitles[currentPage];
-  $("#pageTitle").textContent = title;
+  $("#pageTitle").textContent = currentPage === "dashboard" ? greeting() : title;
   $("#pageSubtitle").textContent = subtitle;
 }
 
@@ -519,7 +551,7 @@ function dashboardPage() {
         </div>
       </div>
       <div class="right-stack">
-        ${panel("Account Overview", `<div class="detail-list">${detail("Account Name", "Rean Justine O. Baulite")}${detail("Account Number", "1234 5678 9012")}${detail("Service Address", "123 Main St., Brgy. 123, Makati City, Metro Manila")}${detail("Rate", "Residential")}</div><button class="btn btn-outline" style="width:100%;margin-top:17px" data-page="account">View Account Details</button>`)}
+        ${panel("Account Overview", `<div class="detail-list">${detail("Account Name", escapeHtml(userProfile().name || "—"))}${detail("Account Number", "1234 5678 9012")}${detail("Service Address", "123 Main St., Brgy. 123, Makati City, Metro Manila")}${detail("Rate", "Residential")}</div><button class="btn btn-outline" style="width:100%;margin-top:17px" data-page="account">View Account Details</button>`)}
         ${panel("Alerts & Notifications", notificationList(notificationItems.slice(0, 3)), `<button class="text-link" data-page="notifications">View all</button>`)}
         ${panel("Bill Estimate", `<div class="stat-label">Based on your current usage</div><div class="bill-amount">₱1,256.34</div><div class="progress"><span></span></div><div class="detail-list" style="margin:13px 0">${detail("Due Date", "May 20, 2026")}${detail("Billing Period", "Apr 1 – Apr 30, 2026")}</div><button class="btn btn-primary" style="width:100%" data-page="billing">View Bill & Pay</button>`)}
       </div>
@@ -632,6 +664,11 @@ function notificationsPage() {
 }
 
 function accountPage() {
+  const me = userProfile();
+  const value = (text) => `value="${escapeHtml(text)}"`;
+  const photo = me.photo
+    ? `<img src="${escapeHtml(me.photo)}" alt="" referrerpolicy="no-referrer" style="width:64px;height:64px;border-radius:50%;object-fit:cover">`
+    : `<span class="avatar" style="width:64px;height:64px;font-size:22px;pointer-events:none">${escapeHtml((me.firstName[0] ?? "") + (me.lastName[0] ?? "") || "ME")}</span>`;
   return `
     ${pageHead("Account settings", "Manage your account details and preferences.")}
     <div style="margin-bottom:14px">${panel("Sign-in & security", `<div data-slot="account-security"><p class="muted-note">Loading…</p></div>`)}</div>
@@ -644,10 +681,11 @@ function accountPage() {
       </div>
       ${panel("Personal Information", `
         <form class="form-grid" id="accountForm">
-          <div class="field"><label>First Name</label><input value="Rean Justine"></div>
-          <div class="field"><label>Last Name</label><input value="Baulite"></div>
-          <div class="field"><label>Email Address</label><input type="email" value="rean.justine@example.com"></div>
-          <div class="field"><label>Mobile Number</label><input value="+63 9XX XXX XXXX"></div>
+          <div class="field full" style="display:flex;align-items:center;gap:14px">${photo}<div><b>${escapeHtml(me.name || "Your profile")}</b><p class="muted-note" style="margin:2px 0 0">${me.signedIn ? `Signed in with ${me.provider}` : "Guest session"}</p></div></div>
+          <div class="field"><label>First Name</label><input ${value(me.firstName)}></div>
+          <div class="field"><label>Last Name</label><input ${value(me.lastName)}></div>
+          <div class="field"><label>Email Address</label><input type="email" ${value(me.email)} disabled></div>
+          <div class="field"><label>Mobile Number</label><input ${value(me.phone)} placeholder="+63 9XX XXX XXXX"></div>
           <div class="field full"><label>Service Address</label><input value="123 Main St., Brgy. 123, Makati City, Metro Manila"></div>
           <div class="field"><label>Account Number</label><input value="1234 5678 9012" disabled></div>
           <div class="field"><label>Rate Category</label><input value="Residential" disabled></div>
@@ -1036,7 +1074,17 @@ document.addEventListener("submit", (event) => {
 
   if (event.target.id === "accountForm") {
     event.preventDefault();
-    toast("Account changes saved in this demo.");
+    const user = auth?.currentUser;
+    const [first, last] = [...event.target.querySelectorAll("input")].slice(0, 2).map((input) => input.value.trim());
+    const displayName = [first, last].filter(Boolean).join(" ");
+    if (!user || user.isAnonymous || !displayName) {
+      toast("Account changes saved in this demo.");
+      return;
+    }
+    import("firebase/auth")
+      .then(({ updateProfile }) => updateProfile(user, { displayName }))
+      .then(() => { render(); toast("Your name was updated."); })
+      .catch(() => toast("Could not update your name. Please try again."));
   }
 });
 

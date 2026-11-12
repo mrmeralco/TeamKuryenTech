@@ -13,7 +13,9 @@ from typing import Annotated
 import firebase_admin
 from fastapi import Depends, Header, HTTPException
 from firebase_admin import auth as firebase_auth
+from firebase_admin import credentials
 from firebase_admin.exceptions import FirebaseError
+from google.auth.credentials import AnonymousCredentials
 from google.auth.exceptions import DefaultCredentialsError
 
 
@@ -37,7 +39,15 @@ def get_firebase_app():
     try:
         return firebase_admin.get_app()
     except ValueError:
-        return firebase_admin.initialize_app(options={"projectId": project_id})
+        # Without a service account, ID-token verification still works (it only needs
+        # Google's public keys), so fall back to anonymous credentials instead of failing.
+        credential = None if os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip() else _PublicKeysOnly()
+        return firebase_admin.initialize_app(credential, options={"projectId": project_id})
+
+
+class _PublicKeysOnly(credentials.Base):
+    def get_credential(self):
+        return AnonymousCredentials()
 
 
 def require_user(authorization: Annotated[str | None, Header()] = None) -> AuthUser:

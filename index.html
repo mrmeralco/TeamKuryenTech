@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#fffaf2">
   <title>SmartWatts | Energy Dashboard</title>
+  <!-- Hide the dashboard until the login check in src/lib/sessionGuard.ts passes. -->
+  <script>document.documentElement.classList.add("auth-pending");</script>
+  <style>html.auth-pending body{visibility:hidden}</style>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="responsive.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -53,6 +56,7 @@
         <button class="provider"><span class="meralco-mark">M</span> MERALCO <span class="provider-chevron"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></button>
         <button class="icon-button" data-page="notifications" aria-label="Notifications"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><i class="notification-dot">3</i></button>
         <button class="avatar" data-page="account">RJ</button>
+        <button class="icon-button" id="logoutButton" type="button" aria-label="Log out" title="Log out"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></button>
       </div>
     </header>
     <section id="content" class="content"></section>
@@ -68,6 +72,7 @@
 </nav>
 <div class="toast" id="toast"></div>
 <div id="chat-root"></div>
+<script type="module" src="/src/lib/sessionGuard.ts"></script>
 <script type="module" src="/app.js"></script>
 <script type="module" src="/src/main.tsx"></script>
 </body>

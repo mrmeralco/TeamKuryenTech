@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test("Mapbox map renders markers and syncs list and marker selection", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.locator('[data-page="support"]').first().click();
   await page.getByRole("button", { name: "Find a Business Center" }).click();
 
