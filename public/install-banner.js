@@ -62,14 +62,17 @@
     "max-width:min(92vw,360px);background:#1d1712;color:#fff;border-radius:14px;padding:12px 14px;font:500 13.5px/1.45 Inter,system-ui,sans-serif;",
     "box-shadow:0 10px 30px rgba(0,0,0,.25)}",
     ".sw-install-tip b{color:#ffb15c}",
-    /* Make room for the bar: push the page, the fixed dashboard sidebar and the sticky topbar down. */
-    "html.sw-has-install-bar body{padding-top:var(--sw-install-bar-h)}",
+    /* Desktop: a top bar; make room for it (page, fixed sidebar, sticky topbar / header move down). */
+    "@media (min-width:701px){html.sw-has-install-bar body{padding-top:var(--sw-install-bar-h)}",
     "html.sw-has-install-bar .sidebar{top:var(--sw-install-bar-h)}",
     "html.sw-has-install-bar .topbar{top:calc(10px + var(--sw-install-bar-h))}",
-    "html.sw-has-install-bar header[style*='position: sticky']{top:var(--sw-install-bar-h)!important}",
+    "html.sw-has-install-bar header[style*='position: sticky']{top:var(--sw-install-bar-h)!important}}",
     ".sw-short{display:none}",
-    "@media (max-width:560px){.sw-install-text small,.sw-long{display:none}.sw-short{display:inline}.sw-install-bar{justify-content:flex-start;gap:10px;padding-left:12px}",
-    ".sw-install-btn{margin-left:auto;padding:8px 13px}}",
+    /* Phones: a floating card above the bottom tab bar; it never moves or covers the page header. */
+    "@media (max-width:700px){.sw-install-bar{inset:auto 10px calc(var(--sw-install-bottom,0px) + 12px + env(safe-area-inset-bottom,0px)) 10px;",
+    "border-radius:16px;justify-content:flex-start;gap:10px;padding:10px 44px 10px 12px;transform:translateY(calc(100% + 140px));",
+    "box-shadow:0 10px 30px rgba(80,40,0,.3)}.sw-install-text small,.sw-long{display:none}.sw-short{display:inline}",
+    ".sw-install-btn{margin-left:auto;padding:8px 13px}.sw-install-tip{top:auto;bottom:calc(var(--sw-install-bottom,0px) + 96px)}}",
     "@media (prefers-reduced-motion:reduce){.sw-install-bar{transition:none}}",
   ].join("");
 
@@ -77,10 +80,25 @@
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>';
 
+  var phone = window.matchMedia ? window.matchMedia("(max-width:700px)") : { matches: false };
+  var lastH = -1, lastBottom = -1;
+
+  // Only writes when a value really changes, so scrolling (mobile URL bar) never re-lays out the page.
   function syncHeight() {
-    var h = bar && bar.classList.contains("is-shown") ? bar.offsetHeight : 0;
-    document.documentElement.style.setProperty("--sw-install-bar-h", h + "px");
-    document.documentElement.classList.toggle("sw-has-install-bar", h > 0);
+    var shown = bar && bar.classList.contains("is-shown");
+    var h = shown && !phone.matches ? bar.offsetHeight : 0;
+    var tabbar = document.querySelector(".mobile-tabbar");
+    var bottom = tabbar && getComputedStyle(tabbar).display !== "none" ? tabbar.offsetHeight : 0;
+    var root = document.documentElement;
+    if (h !== lastH) {
+      lastH = h;
+      root.style.setProperty("--sw-install-bar-h", h + "px");
+      root.classList.toggle("sw-has-install-bar", h > 0);
+    }
+    if (bottom !== lastBottom) {
+      lastBottom = bottom;
+      root.style.setProperty("--sw-install-bottom", bottom + "px");
+    }
   }
 
   function hide(remember) {
@@ -142,7 +160,7 @@
       bar.querySelector(".sw-install-close").addEventListener("click", function () { hide(true); });
       document.body.prepend(bar);
       if (window.ResizeObserver) new ResizeObserver(syncHeight).observe(bar);
-      window.addEventListener("resize", syncHeight);
+      if (phone.addEventListener) phone.addEventListener("change", syncHeight);
     }
     requestAnimationFrame(function () {
       bar.classList.add("is-shown");

@@ -41,19 +41,77 @@ def mail(monkeypatch, tmp_path):
     monkeypatch.setattr(email_otp, "store", OtpStore())
     monkeypatch.setattr(email_otp, "registry", VerifiedRegistry(tmp_path / "verified.json"))
     monkeypatch.setattr(email_otp, "send_code_email", lambda to, code, name=None: sent.append((to, code, name)))
-    monkeypatch.setattr(email_otp, "send_welcome_email_later", lambda to, name: sent.append((to, "welcome", name)))
+    monkeypatch.setattr(email_otp, "send_welcome_email_later", lambda to, name, bg=None: sent.append((to, "welcome", name)))
     return sent
 
 
 def test_send_email_reports_mailer_failures(monkeypatch):
-    class Done:
-        stdout = '{"ok": false, "auth": true, "error": "Invalid login"}\n'
-        stderr = ""
-    monkeypatch.setattr(email_otp.subprocess, "run", lambda *a, **k: Done())
-    monkeypatch.setattr(email_otp.shutil, "which", lambda name: "node")
+    def reject(*a, **k):
+        raise email_otp.mailer.MailerError("Invalid login", auth=True)
+    monkeypatch.setattr(email_otp.mailer, "send", reject)
     with pytest.raises(email_otp.HTTPException) as caught:
         email_otp.send_email("verification", "a@b.co", {"code": "123456"})
     assert caught.value.status_code == 503
+
+
+def test_every_template_renders_with_inline_logo(monkeypatch):
+    from app import mailer
+    monkeypatch.setenv("SMTP_USER", "sender@example.com")
+    for template in ("verification", "password-reset", "welcome", "bill-saved", "bill-due-reminder", "statement-published"):
+        message = mailer.compose(template, "a@b.co", {"code": "123456", "name": "Juan <b>", "amountPesos": 1234.5, "kwh": 210,
+                                                     "periodStart": "2026-10-01", "periodEnd": "2026-10-31", "dueDate": "2026-11-20"})
+        body = message.as_string()
+        assert message["Subject"] and "cid:smartwatts-logo" in body and "Juan <b>" not in body
+
+
+class FakeRedis:
+    """Enough of the Upstash pipeline for the OTP store and registry."""
+
+    def __init__(self):
+        self.data = {}
+
+    def pipeline(self, *commands):
+        out = []
+        for cmd, key, *args in commands:
+            if cmd == "DEL":
+                out.append(1 if self.data.pop(key, None) is not None else 0)
+            elif cmd == "HSET":
+                self.data.setdefault(key, {}).update(dict(zip(args[::2], args[1::2])))
+                out.append(len(args) // 2)
+            elif cmd == "HGET":
+                out.append(self.data.get(key, {}).get(args[0]))
+            elif cmd == "HGETALL":
+                out.append([x for kv in self.data.get(key, {}).items() for x in kv])
+            elif cmd == "HINCRBY":
+                h = self.data.setdefault(key, {})
+                h[args[0]] = str(int(h.get(args[0], 0)) + int(args[1]))
+                out.append(int(h[args[0]]))
+            elif cmd == "SET":
+                self.data[key] = args[0]
+                out.append("OK")
+            elif cmd == "GET":
+                out.append(self.data.get(key))
+            else:
+                out.append(1)
+        return out
+
+
+def test_redis_store_is_shared_between_instances():
+    redis = FakeRedis()
+    one, two = email_otp.RedisOtpStore(redis), email_otp.RedisOtpStore(redis)
+    code = one.issue("a@b.co", "verify", now=0)
+    assert two.seconds_until_resend("a@b.co", "verify", now=10) == 50
+    wrong = "000000" if code != "000000" else "111111"
+    assert not two.check("a@b.co", "verify", wrong, now=1)
+    assert two.check("a@b.co", "verify", code, now=1)  # issued on one instance, accepted on another
+    assert not one.check("a@b.co", "verify", code, now=2)  # single use
+    code = one.issue("a@b.co", "verify", now=0)
+    for _ in range(MAX_ATTEMPTS):
+        two.check("a@b.co", "verify", wrong, now=1)
+    assert not one.check("a@b.co", "verify", code, now=1)  # locked
+    registry = email_otp.RedisVerifiedRegistry(redis)
+    registry.mark("u1", "A@B.co")
+    assert registry.is_verified("u1", "a@b.co") and not registry.is_verified("u1", "c@d.co")
 
 
 @pytest.fixture(autouse=True)

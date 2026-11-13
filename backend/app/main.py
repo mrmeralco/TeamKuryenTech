@@ -327,26 +327,37 @@ async def analyze_appliance_label(request: ApplianceVisionRequest, _user: AuthUs
         ],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 800,
+            "maxOutputTokens": 2048,
             "responseMimeType": "application/json",
         },
     }
 
-    model = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
-            response = await client.post(
-                GEMINI_API_URL.format(model=model),
-                headers={"x-goog-api-key": api_key},
-                json=payload,
-            )
-    except httpx.TimeoutException as error:
-        raise HTTPException(status_code=504, detail="The AI vision service timed out. Please try again.") from error
-    except httpx.RequestError as error:
-        raise HTTPException(status_code=502, detail="Could not reach the AI vision service. Please try again.") from error
-
-    if response.is_error:
-        raise HTTPException(status_code=502, detail="The AI vision service returned an error. Please try again later.")
+    # Thinking models were slow enough to time out on every photo: keep thinking low, and fall back to a
+    # fast model when the configured one times out or errors.
+    primary = os.getenv("GEMINI_MODEL", "").strip() or "gemini-3-flash-preview"
+    models = [primary] + [m for m in ("gemini-2.5-flash",) if m != primary]
+    response = None
+    last_error: HTTPException | None = None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as client:
+        for model in models:
+            thinking = {"thinkingBudget": 0} if model.startswith("gemini-2") else {"thinkingLevel": "low"}
+            body = {**payload, "generationConfig": {**payload["generationConfig"], "thinkingConfig": thinking}}
+            try:
+                attempt = await client.post(GEMINI_API_URL.format(model=model), headers={"x-goog-api-key": api_key}, json=body)
+            except httpx.TimeoutException:
+                last_error = HTTPException(status_code=504, detail="The AI vision service timed out. Please try again.")
+                continue
+            except httpx.RequestError:
+                last_error = HTTPException(status_code=502, detail="Could not reach the AI vision service. Please try again.")
+                continue
+            if attempt.is_error:
+                logging.getLogger("smartwatts.ai").warning("gemini %s returned %s", model, attempt.status_code)
+                last_error = HTTPException(status_code=502, detail="The AI vision service returned an error. Please try again later.")
+                continue
+            response = attempt
+            break
+    if response is None:
+        raise last_error or HTTPException(status_code=502, detail="The AI vision service returned an error.")
 
     try:
         result = response.json()

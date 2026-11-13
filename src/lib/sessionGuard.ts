@@ -13,16 +13,69 @@ import { captureInviteFromHash, PENDING_INVITE_KEY } from "./pendingInvite";
 
 const LANDING_URL = "/";
 
-/** Verified by Firebase (Google) or by the SmartWatts email code (checked on the backend). */
-async function isSignedIn(user: User | null): Promise<boolean> {
-  if (!user || user.isAnonymous) return false;
-  if (user.emailVerified) return true;
+type SignedIn = "yes" | "no" | "unknown";
+
+/**
+ * Verified by Firebase (Google) or by the SmartWatts email code (checked on the backend).
+ * "unknown" = the check itself failed (offline, rate limited, server error, browser check). That must NOT
+ * send the user away: the landing page would see the Firebase session and send them straight back here,
+ * looping between the two pages.
+ */
+async function checkSignedIn(user: User | null): Promise<SignedIn> {
+  if (!user || user.isAnonymous) return "no";
+  if (user.emailVerified) return "yes";
   try {
     const res = await fetch("/api/auth/status", { headers: { Authorization: `Bearer ${await user.getIdToken()}` } });
-    return res.ok && (await res.json()).verified === true;
+    if (res.status === 401) return "no";
+    if (!res.ok) return "unknown";
+    return (await res.json()).verified === true ? "yes" : "no";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function isSignedIn(user: User | null): Promise<SignedIn> {
+  for (const wait of [0, 1500, 4000]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    const result = await checkSignedIn(user);
+    if (result !== "unknown") return result;
+  }
+  return "unknown";
+}
+
+// Loop breaker: if this tab gets bounced off the dashboard again within a short time, something disagrees
+// with the landing page's check. Sign out before leaving so the landing page cannot send the user back.
+const BOUNCE_KEY = "smartwatts-dashboard-bounces";
+const BOUNCE_WINDOW_MS = 30_000;
+
+function recordBounce(): boolean {
+  try {
+    const now = Date.now();
+    const recent = (JSON.parse(localStorage.getItem(BOUNCE_KEY) ?? "[]") as number[]).filter(
+      (t) => typeof t === "number" && now - t < BOUNCE_WINDOW_MS,
+    );
+    recent.push(now);
+    localStorage.setItem(BOUNCE_KEY, JSON.stringify(recent));
+    return recent.length >= 2;
   } catch {
     return false;
   }
+}
+
+function clearBounces(): void {
+  try {
+    localStorage.removeItem(BOUNCE_KEY);
+  } catch {
+    /* storage blocked */
+  }
+}
+
+async function bounce(): Promise<void> {
+  if (recordBounce() && auth) {
+    clearBounces();
+    await signOut(auth).catch(() => undefined);
+  }
+  leave();
 }
 
 function initials(user: User): string {
@@ -85,7 +138,12 @@ async function start(): Promise<void> {
   }
   await firebaseAuth.authStateReady();
   const current = firebaseAuth.currentUser;
-  if (!current || !(await isSignedIn(current))) return leave();
+  if (!current) return leave();
+  const signedIn = await isSignedIn(current);
+  // Only a definite "not verified" leaves. If the check can't be reached, stay: the API still enforces
+  // verification on every data request, so nothing is exposed.
+  if (signedIn === "no") return bounce();
+  clearBounces();
   showUser(current);
   document.documentElement.classList.remove("auth-pending");
 
@@ -96,4 +154,4 @@ async function start(): Promise<void> {
   });
 }
 
-start().catch(() => leave());
+start().catch(() => bounce());
