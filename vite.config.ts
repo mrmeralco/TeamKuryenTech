@@ -96,6 +96,10 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Pages always come from the server: they pass the browser check and the clean-URL routing there
+        // (precaching /index.html hit a redirect, broke the service worker install and caused reload loops).
+        globIgnores: ["**/*.html"],
+        navigateFallback: null,
         navigateFallbackDenylist: [/^\/api\//, /^\/nfc(\/|\.html)?$/, /^\/landing\//, /^\/$/, /^\/(login|register|forgot-password|reset-password)\/?$/],
         runtimeCaching: [
           {

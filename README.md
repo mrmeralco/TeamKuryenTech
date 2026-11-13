@@ -40,7 +40,7 @@ In a second terminal from the project root, create and activate a Python environ
 ```powershell
 python -m venv backend\.venv
 .\backend\.venv\Scripts\Activate.ps1
-pip install -r backend\requirements-dev.txt
+pip install -r backend\requirements.txt
 uvicorn app.main:app --app-dir backend --reload
 ```
 
