@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import re
 from typing import Annotated, Literal
@@ -7,23 +6,10 @@ from typing import Annotated, Literal
 import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 load_dotenv()
-
-if not logging.getLogger().handlers:  # the hosting platform collects stdout/stderr
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-
-from .security import site  # noqa: E402
-from .security.middleware import SecurityMiddleware  # noqa: E402
-from .security.settings import load_security_settings  # noqa: E402
-from .security.validation import validate_params  # noqa: E402
-
-# Validated before anything else: production refuses to start with missing or weak secrets.
-SECURITY = load_security_settings()
 
 from .auth import AuthUser, require_user  # noqa: E402
 from .advisor import AdvisorContext, compute_facts, deterministic_summary, system_prompt, unverified_figures  # noqa: E402
@@ -122,16 +108,11 @@ class TranslationResponse(BaseModel):
     translations: list[str]
 
 
-# No interactive docs or OpenAPI schema in production: the API must not list its routes to strangers.
-_docs = {} if not SECURITY.production else {"docs_url": None, "redoc_url": None, "openapi_url": None}
-app = FastAPI(title="SmartWatts API", version="2.0.0", dependencies=[Depends(validate_params)], **_docs)
-# Cross-origin access is only for local development (the Vite dev server). In production the site and the API
-# share one origin, so no CORS origins are allowed unless ALLOWED_ORIGINS lists them explicitly.
-_DEV_ORIGINS = "" if SECURITY.production else "http://localhost:5173,http://127.0.0.1:5173"
+app = FastAPI(title="SmartWatts API", version="2.0.0")
 allowed_origins = [
     origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", _DEV_ORIGINS).split(",")
-    if origin.strip() and origin.strip() != "*"
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+    if origin.strip()
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -140,17 +121,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Content-Type", "Authorization"],
 )
-
-@app.exception_handler(RequestValidationError)
-async def short_validation_error(_request, error: RequestValidationError):
-    """422 without echoing the submitted values back (only the field location and a short message)."""
-    fields = [{"loc": list(item.get("loc", ())), "msg": str(item.get("msg", "Invalid value"))[:200]}
-              for item in error.errors()[:20]]
-    return JSONResponse({"detail": fields}, status_code=422)
-
-
-# Added last, so it wraps everything else (including CORS): headers on every response, generic 500s.
-app.add_middleware(SecurityMiddleware, settings=SECURITY)
 
 app.include_router(rentals_router)
 app.include_router(email_otp_router)
@@ -169,7 +139,7 @@ async def google_translation_request(method: str, *, params: dict[str, str], pay
         raise HTTPException(status_code=503, detail="Google Cloud Translation is not configured on the server.")
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
             response = await client.request(
                 method,
                 GOOGLE_TRANSLATE_URL,
@@ -476,9 +446,3 @@ async def analyze_appliance_label(request: ApplianceVisionRequest, _user: AuthUs
         confidence=confidence,
         notes=str(data["notes"]).strip() if data.get("notes") else None,
     )
-
-
-# Last route (must stay at the end of this file): the built web app (pages + static files, see security/site.py)
-# and a plain 404 for unknown /api paths.
-app.add_api_route("/{full_path:path}", site.serve, methods=["GET", "HEAD", "POST", "PUT", "PATCH"],
-                  include_in_schema=False)

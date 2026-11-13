@@ -4,7 +4,7 @@ import logging
 from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
-from app.auth import AuthUser, require_operator, require_user
+from app.auth import AuthUser, require_user
 from app.notifications.models import (
     BillSavedNotificationRequest,
     NotificationPreferences,
@@ -63,7 +63,7 @@ def notify_bill_saved(
 @router.post("/scheduler/run", response_model=SchedulerRunResponse)
 def trigger_scheduler(
     req: SchedulerRunRequest = SchedulerRunRequest(),
-    _operator: AuthUser | None = Depends(require_operator),
+    user: AuthUser = Depends(require_user),
 ) -> SchedulerRunResponse:
     """Evaluates upcoming due reminders in Asia/Manila (UTC+8) and flushes due outbox items."""
     return notification_service.run_scheduler(target_date_str=req.target_date, dry_run=req.dry_run)
@@ -79,7 +79,7 @@ def list_outbox(
     results: list[OutboxItem] = []
     for raw in all_items:
         # Normal users only see their own outbox items; admin or owner can see workspace
-        if not user.platform_admin and raw.get("recipient_uid") != user.uid:
+        if not user.is_admin and raw.get("recipient_uid") != user.uid:
             continue
         if workspace and raw.get("workspace") != workspace:
             continue
@@ -93,6 +93,6 @@ def list_outbox(
 
 
 @router.post("/outbox/process")
-def process_outbox_queue(_operator: AuthUser | None = Depends(require_operator)) -> dict[str, int]:
+def process_outbox_queue(user: AuthUser = Depends(require_user)) -> dict[str, int]:
     processed, sent, failed = notification_service.process_outbox()
     return {"processed": processed, "sent": sent, "failed": failed}

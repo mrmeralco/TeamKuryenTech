@@ -15,7 +15,7 @@
   <script src="/install-banner.js" defer></script>
   <title>SmartWatts | Energy Dashboard</title>
   <!-- Hide the dashboard until the login check in src/lib/sessionGuard.ts passes. -->
-  <script src="/auth-pending.js"></script>
+  <script>document.documentElement.classList.add("auth-pending");</script>
   <style>html.auth-pending body{visibility:hidden}</style>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="responsive.css">
@@ -27,7 +27,7 @@
   <link rel="stylesheet" href="fun.css">
   <link rel="stylesheet" href="workspace.css">
   <link rel="stylesheet" href="coins.css">
-<script src="/shield-client.js"></script><script src="/deterrents.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 <div class="app-shell">
@@ -89,7 +89,6 @@
 <div class="export-notice" id="exportNotice" role="status" aria-live="polite" hidden></div>
 <div id="chat-root"></div>
 <script type="module" src="/src/lib/sessionGuard.ts"></script>
-<script type="module" src="/src/vendor-chart.ts"></script>
 <script type="module" src="/app.js"></script>
 <script type="module" src="/src/main.tsx"></script>
 </body>
