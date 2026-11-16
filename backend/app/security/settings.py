@@ -1,7 +1,9 @@
 """Security settings read from the environment, validated once at startup.
 
 Production (SMARTWATTS_ENV=production, a Vercel production/preview deployment, or Cloud Run) refuses to
-start when a required secret is missing or too short. In development a missing BOT_SECRET is replaced by a
+start when a required secret is missing or too short. Behind the Cloudflare Worker (cloudflare/worker.js) the
+backend also needs PROXY_SHARED_SECRET: only requests that carry it are served, and only those may tell the
+backend the visitor's IP and the public hostname (see middleware.py). In development a missing BOT_SECRET is replaced by a
 random per-process value and a warning is logged, so the app still runs locally.
 
 No secret has a fallback value in code.
@@ -22,6 +24,10 @@ GENERATE_HINT = "node -e \"console.log(require('crypto').randomBytes(32).toStrin
 
 # Secrets SmartWatts creates itself: must be present and at least MIN_SECRET_LENGTH characters in production.
 GENERATED_SECRETS = ("BOT_SECRET",)
+# Header names the Cloudflare Worker sets. Visitors cannot set them: the Worker strips them from every request.
+PROXY_SECRET_HEADER = "x-smartwatts-proxy"
+PROXY_CLIENT_IP_HEADER = "x-smartwatts-client-ip"
+PROXY_HOST_HEADER = "x-smartwatts-host"
 # Non-secret settings production cannot run safely without.
 # (No Redis is required: rate-limit counters live in memory per instance, strikes and bans are shared through
 # Firestore. UPSTASH_REDIS_REST_URL/TOKEN are optional and, when both are set, are used for everything.)
@@ -63,6 +69,8 @@ class SecuritySettings:
     attack_mode_forced: bool
     # Header the hosting platform sets with the real client IP (never a raw client-supplied X-Forwarded-For).
     client_ip_header: str
+    # Shared secret the Cloudflare Worker sends in x-smartwatts-proxy. Empty = no proxy (Vercel, local).
+    proxy_secret: str = ""
 
 
 def _problem(name: str, reason: str) -> str:
@@ -85,6 +93,12 @@ def load_security_settings(env: Mapping[str, str] | None = None) -> SecuritySett
         for name in REQUIRED_SETTINGS:
             if not env.get(name, "").strip():
                 problems.append(f"{name} is missing (see .env.example).")
+        proxy_secret = env.get("PROXY_SHARED_SECRET", "").strip()
+        if proxy_secret and len(proxy_secret) < MIN_SECRET_LENGTH:
+            problems.append(_problem("PROXY_SHARED_SECRET", f"is shorter than {MIN_SECRET_LENGTH} characters"))
+        if env.get("K_SERVICE") and not proxy_secret:
+            # Cloud Run's *.run.app URL is public: without the secret anyone could skip the Cloudflare edge.
+            problems.append(_problem("PROXY_SHARED_SECRET", "is missing (required on Cloud Run behind Cloudflare)"))
         if bool(env.get("UPSTASH_REDIS_REST_URL", "").strip()) != bool(env.get("UPSTASH_REDIS_REST_TOKEN", "").strip()):
             problems.append("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set together (or both left empty).")
         if problems:
@@ -105,7 +119,11 @@ def load_security_settings(env: Mapping[str, str] | None = None) -> SecuritySett
         return production if value == "" else value in {"1", "true", "on", "yes"}
 
     shield = flag("SMARTWATTS_SHIELD")
-    default_ip_header = "x-vercel-forwarded-for" if env.get("VERCEL") else ""
+    proxy_secret = env.get("PROXY_SHARED_SECRET", "").strip()
+    if proxy_secret and len(proxy_secret) < MIN_SECRET_LENGTH:
+        raise MissingSecretError(_problem("PROXY_SHARED_SECRET", f"is shorter than {MIN_SECRET_LENGTH} characters"))
+    # Behind the Worker the visitor's IP comes from the Worker's header (trusted only with the proxy secret).
+    default_ip_header = PROXY_CLIENT_IP_HEADER if proxy_secret else ("x-vercel-forwarded-for" if env.get("VERCEL") else "")
 
     # The deployment's own Vercel URLs (system env vars) are always accepted, so preview deployments keep working.
     vercel_hosts = _csv(",".join(env.get(name, "") for name in
@@ -123,4 +141,5 @@ def load_security_settings(env: Mapping[str, str] | None = None) -> SecuritySett
         rate_limits=flag("SMARTWATTS_RATE_LIMITS"),
         attack_mode_forced=env.get("ATTACK_MODE", "").strip() == "1",
         client_ip_header=(env.get("TRUSTED_CLIENT_IP_HEADER", "").strip().lower() or default_ip_header),
+        proxy_secret=proxy_secret,
     )

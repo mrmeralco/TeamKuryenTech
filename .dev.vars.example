@@ -1,0 +1,7 @@
+# Local secrets for `npx wrangler dev` (copy to .dev.vars, which is git-ignored). Placeholders only.
+# Must equal PROXY_SHARED_SECRET of the local backend (at least 32 characters).
+# Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+PROXY_SHARED_SECRET=
+# Optional, only to try the scheduled handler locally (`npx wrangler dev --test-scheduled`):
+# the raw cron key whose SHA-256 is the backend's CRON_API_KEY_SHA256.
+CRON_API_KEY=

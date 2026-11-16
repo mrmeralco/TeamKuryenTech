@@ -1,0 +1,13 @@
+# Docker build context for the Cloud Run API image: the same allowlist as .gcloudignore.
+*
+!Dockerfile
+!backend/
+backend/*
+!backend/app/
+!backend/requirements.txt
+!backend/serve.py
+!mailer/
+!knowledge/
+**/__pycache__/
+**/*.pyc
+**/.DS_Store

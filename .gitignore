@@ -17,3 +17,10 @@ firebase-adminsdk-*.json
 .vercel/
 backend/data/
 dev-dist/
+# Cloudflare Wrangler: local secrets and state
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.wrangler/
+
+.DS_Store

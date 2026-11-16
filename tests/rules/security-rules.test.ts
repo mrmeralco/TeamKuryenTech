@@ -159,6 +159,20 @@ describe("Tier 1 bill records (OCR data minimization)", () => {
     }));
   });
 
+  it("accepts the due date, bill date, and payment fields written by saveBill", async () => {
+    const alice = env.authenticatedContext("alice").firestore();
+    await assertSucceeds(setDoc(doc(alice, "users/alice/bills/with-dates"), {
+      ...base, createdAt: serverTimestamp(), dueDate: "2026-10-25", billDate: "2026-10-12",
+      paid: false, paidAt: null,
+    }));
+    await assertFails(setDoc(doc(alice, "users/alice/bills/bad-date"), {
+      ...base, dueDate: "not-a-date",
+    }));
+    await assertFails(setDoc(doc(alice, "users/alice/bills/bad-paid"), {
+      ...base, paid: "false",
+    }));
+  });
+
   it("rejects unknown categories, fractional centavos, and stored raw OCR text or identifiers", async () => {
     const alice = env.authenticatedContext("alice").firestore();
     await assertFails(setDoc(doc(alice, "users/alice/bills/b2"), { ...base, createdAt: serverTimestamp(), components: { madeUp: 100 } }));

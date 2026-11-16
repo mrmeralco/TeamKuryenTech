@@ -34,6 +34,19 @@ service cloud.firestore {
         || request.resource.data[field] is timestamp;
     }
 
+    function optionalDateText(field) {
+      return !(field in request.resource.data)
+        || request.resource.data[field] == null
+        || (request.resource.data[field] is string
+          && request.resource.data[field].matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+    }
+
+    function optionalNullableTimestamp(field) {
+      return !(field in request.resource.data)
+        || request.resource.data[field] == null
+        || request.resource.data[field] is timestamp;
+    }
+
     function isDateText(value) {
       return value is string && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
     }
@@ -91,9 +104,12 @@ service cloud.firestore {
 
     function validBill() {
       let d = request.resource.data;
-      return onlyKeys(['periodStart', 'periodEnd', 'kwh', 'amountCentavos', 'source', 'components', 'previousReading', 'presentReading', 'createdAt'])
+      return onlyKeys(['periodStart', 'periodEnd', 'kwh', 'amountCentavos', 'source', 'components', 'previousReading', 'presentReading', 'dueDate', 'billDate', 'paid', 'paidAt', 'createdAt'])
         && validComponents()
         && optionalReading('previousReading') && optionalReading('presentReading')
+        && optionalDateText('dueDate') && optionalDateText('billDate')
+        && (!('paid' in d) || d.paid is bool)
+        && optionalNullableTimestamp('paidAt')
         && isDateText(d.periodStart) && isDateText(d.periodEnd) && d.periodEnd > d.periodStart
         && d.kwh is number && d.kwh > 0 && d.kwh < 1000000
         && d.amountCentavos is int && d.amountCentavos >= 0 && d.amountCentavos < 100000000000

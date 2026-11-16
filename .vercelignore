@@ -1,0 +1,27 @@
+# Files `vercel deploy` must never upload (Git deployments only see committed files; CLI deployments upload the
+# working directory). Secrets and local user data first.
+.env
+.env.*
+!.env.example
+*.service-account.json
+firebase-adminsdk-*.json
+backend/data/
+.agent-handoff/
+
+# Local tooling, caches and build/test output (Vercel installs and builds from scratch).
+node_modules/
+dist/
+dev-dist/
+backend/.venv/
+**/__pycache__/
+.pytest_cache/
+backend/.pytest_cache/
+test-results/
+playwright-report/
+coverage/
+*-debug.log
+.firebase/
+.DS_Store
+
+# Not used by the web build or the API (OCR language data is loaded from tessdata.projectnaptha.com).
+eng.traineddata

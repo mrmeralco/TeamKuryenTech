@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 
 from app.auth import AuthUser
+from app.email_otp import email_delivery_enabled
 from app.email_otp import send_email as raw_send_email
 from app.notifications.models import (
     BillSavedNotificationRequest,
@@ -22,12 +23,16 @@ from app.notifications.models import (
     OutboxStatus,
     SchedulerRunResponse,
 )
-from app.rentals.store import DocumentStore, InMemoryStore
+from app.rentals.store import AlreadyExistsError, DocumentStore, InMemoryStore
 
 logger = logging.getLogger("smartwatts.notifications")
 
 MANILA_TZ = ZoneInfo("Asia/Manila")
 EMAIL_REGEX = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+# Personal bills the due-date scheduler watches: one document per user (kept in the same store as the outbox, so
+# it survives restarts and is shared by every instance). Only the most recent bills per user are kept.
+PERSONAL_BILLS_COLLECTION = "notification_personal_bills"
+MAX_TRACKED_BILLS_PER_USER = 60
 
 
 def get_manila_today() -> datetime.date:
@@ -43,7 +48,6 @@ class NotificationService:
         self.store = store or InMemoryStore()
         self.email_sender = email_sender or raw_send_email
         self._lock = threading.Lock()
-        self._personal_bills_registry: dict[str, list[dict[str, Any]]] = {}
 
     # ---------------------------------------------------------------- preferences
     def get_preferences(self, uid: str) -> NotificationPreferences:
@@ -126,6 +130,10 @@ class NotificationService:
     def process_outbox(self, limit: int = 20, now: float | None = None) -> tuple[int, int, int]:
         """Processes up to `limit` due outbox items. Returns (processed, sent, failed)."""
         now_ts = time.time() if now is None else now
+        if self.email_sender is raw_send_email and not email_delivery_enabled():
+            # Leave the queue untouched (no attempts used up) until email is configured and switched on.
+            logger.info("Outbox not processed: email delivery is disabled in this environment.")
+            return 0, 0, 0
         items = self.store.query("notifications_outbox")
         due_items = [
             OutboxItem(**item)
@@ -139,12 +147,15 @@ class NotificationService:
         failed = 0
 
         for item in due_items:
-            processed += 1
-            # Mark sending
+            # Claim the item atomically, so two instances (or a cron run and a request) never send it twice.
             try:
-                self.store.update("notifications_outbox", item.id, {"status": "sending"})
+                claimed = self.store.compare_and_update(
+                    "notifications_outbox", item.id, {"status": item.status}, {"status": "sending"})
             except Exception:
+                claimed = False
+            if not claimed:
                 continue
+            processed += 1
 
             try:
                 self.email_sender(item.template, item.to_email, item.template_data)
@@ -243,16 +254,30 @@ class NotificationService:
     # ---------------------------------------------------------------- personal bill registry (for scheduler)
     def register_personal_bill(self, uid: str, bill: dict[str, Any]) -> None:
         with self._lock:
-            bills = self._personal_bills_registry.setdefault(uid, [])
+            bills = self.get_user_personal_bills(uid)
             # Replace if bill with same id exists, else append
             b_id = bill.get("billId") or bill.get("id")
-            self._personal_bills_registry[uid] = [
-                b for b in bills if (b.get("billId") or b.get("id")) != b_id
-            ] + [bill]
+            bills = [b for b in bills if (b.get("billId") or b.get("id")) != b_id] + [copy.deepcopy(bill)]
+            data = {"uid": uid, "bills": bills[-MAX_TRACKED_BILLS_PER_USER:], "updated_at": time.time()}
+            if self.store.get(PERSONAL_BILLS_COLLECTION, uid) is None:
+                try:
+                    self.store.create(PERSONAL_BILLS_COLLECTION, uid, data)
+                    return
+                except AlreadyExistsError:
+                    pass  # another instance created it first
+            self.store.update(PERSONAL_BILLS_COLLECTION, uid, data)
 
     def get_user_personal_bills(self, uid: str) -> list[dict[str, Any]]:
-        with self._lock:
-            return copy.deepcopy(self._personal_bills_registry.get(uid, []))
+        doc = self.store.get(PERSONAL_BILLS_COLLECTION, uid)
+        bills = (doc or {}).get("bills")
+        return copy.deepcopy(bills) if isinstance(bills, list) else []
+
+    def _all_personal_bills(self) -> dict[str, list[dict[str, Any]]]:
+        registry: dict[str, list[dict[str, Any]]] = {}
+        for doc in self.store.query(PERSONAL_BILLS_COLLECTION):
+            if isinstance(doc.get("bills"), list):
+                registry[doc.get("uid") or doc["id"]] = doc["bills"]
+        return registry
 
     # ---------------------------------------------------------------- tenant statement published
     def handle_statement_published(
@@ -318,8 +343,7 @@ class NotificationService:
         queued_count = 0
 
         # 1. Evaluate Personal bills
-        with self._lock:
-            registry_copy = copy.deepcopy(self._personal_bills_registry)
+        registry_copy = self._all_personal_bills()
 
         for uid, bills in registry_copy.items():
             prefs = self.get_preferences(uid)
@@ -410,5 +434,12 @@ class NotificationService:
         )
 
 
-# Singleton instance used by the FastAPI app
-notification_service = NotificationService()
+# Singleton instance used by the FastAPI app: Firestore-backed in production (durable outbox, preferences and
+# reminder registry shared by every instance), in memory locally and in tests (see app/persistence.py).
+def _default_store() -> DocumentStore:
+    from app.persistence import shared_document_store
+
+    return shared_document_store() or InMemoryStore()
+
+
+notification_service = NotificationService(store=_default_store())

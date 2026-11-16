@@ -1,0 +1,14 @@
+# Upload ONLY what the Cloud Run API image needs (gcloud run deploy --source .). Allowlist: ignore everything,
+# then re-include. Never uploads .env, service-account keys, node_modules, dist or backend/data.
+/*
+!/Dockerfile
+!/backend/
+/backend/*
+!/backend/app/
+!/backend/requirements.txt
+!/backend/serve.py
+!/mailer/
+!/knowledge/
+**/__pycache__/
+**/*.pyc
+**/.DS_Store
