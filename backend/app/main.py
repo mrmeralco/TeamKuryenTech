@@ -25,6 +25,12 @@ from .security.validation import validate_params  # noqa: E402
 # Validated before anything else: production refuses to start with missing or weak secrets.
 SECURITY = load_security_settings()
 
+# Serverless hosts (Vercel) get Google credentials from an environment variable; a malformed value stops startup
+# with a message that names the variable but never shows its value.
+from .gcp_credentials import install_credentials_from_env  # noqa: E402
+
+install_credentials_from_env()
+
 from .auth import AuthUser, require_user  # noqa: E402
 from .advisor import AdvisorContext, compute_facts, deterministic_summary, system_prompt, unverified_figures  # noqa: E402
 from .rentals.router import router as rentals_router  # noqa: E402

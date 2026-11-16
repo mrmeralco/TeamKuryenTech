@@ -1,0 +1,93 @@
+// SmartWatts on Cloudflare Workers: static site (Workers Static Assets) + /api proxy to FastAPI on Cloud Run.
+// Guide: docs/CLOUDFLARE_DEPLOYMENT.md. Worker code: cloudflare/worker.js (entry) + cloudflare/app.js (logic).
+//
+//   npx wrangler dev                        local (top level below; backend on http://127.0.0.1:8000)
+//   npx wrangler deploy --env preview       PUBLISHES smartwatts-preview.<account>.workers.dev
+//   npx wrangler deploy --env production    PUBLISHES smartwatts.<account>.workers.dev (+ custom domain)
+//
+// Secrets are never in this file: `npx wrangler secret put PROXY_SHARED_SECRET --env <env>` (and CRON_API_KEY for
+// production). Locally they come from .dev.vars (git-ignored; see .dev.vars.example).
+// Non-inheritable keys (vars, ratelimits, triggers) are repeated in every environment on purpose.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "smartwatts-dev",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  // Versioned preview URLs would be extra hostnames that are not in ALLOWED_HOSTS or Firebase authorized domains.
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    // Exact file names only: clean URLs are mapped by the Worker, unknown paths are a plain 404 (no SPA fallback).
+    "html_handling": "none",
+    "not_found_handling": "none",
+    // Only these reach the Worker; every other request is a static file served directly from the asset store.
+    "run_worker_first": [
+      "/api",
+      "/api/*",
+      "/__t",
+      "/__v",
+      "/__c.js",
+      "/",
+      "/login",
+      "/register",
+      "/forgot-password",
+      "/reset-password",
+      "/dashboard",
+      "/dashboard/",
+      "/nfc",
+      "/nfc/",
+      "/landing",
+      "/landing/",
+      "/landing/*.html"
+    ]
+  },
+  "observability": { "enabled": true },
+  "vars": {
+    "ENVIRONMENT": "development",
+    "BACKEND_ORIGIN": "http://127.0.0.1:8000",
+    "PUBLIC_HOSTNAME": "127.0.0.1"
+  },
+  // Edge rate limits per visitor IP (Workers Rate Limiting binding; period must be 10 or 60 s). The backend keeps
+  // its own per-IP limits, strikes and bans as a second layer.
+  "ratelimits": [
+    { "name": "PAGE_LIMITER", "namespace_id": "1001", "simple": { "limit": 120, "period": 60 } },
+    { "name": "API_LIMITER", "namespace_id": "1002", "simple": { "limit": 240, "period": 60 } }
+  ],
+  "env": {
+    "preview": {
+      "name": "smartwatts-preview",
+      "vars": {
+        "ENVIRONMENT": "preview",
+        // REQUIRED before deploying: the preview Cloud Run service URL, e.g. https://smartwatts-api-preview-xxxxx.asia-southeast1.run.app
+        "BACKEND_ORIGIN": "",
+        // Optional for preview (only the production scheduler uses it): smartwatts-preview.<account-subdomain>.workers.dev
+        "PUBLIC_HOSTNAME": ""
+      },
+      "ratelimits": [
+        { "name": "PAGE_LIMITER", "namespace_id": "2001", "simple": { "limit": 120, "period": 60 } },
+        { "name": "API_LIMITER", "namespace_id": "2002", "simple": { "limit": 240, "period": 60 } }
+      ]
+    },
+    "production": {
+      "name": "smartwatts",
+      "vars": {
+        "ENVIRONMENT": "production",
+        // REQUIRED before deploying: the production Cloud Run service URL, e.g. https://smartwatts-api-xxxxx.asia-southeast1.run.app
+        "BACKEND_ORIGIN": "",
+        // REQUIRED: the public hostname (custom domain, or smartwatts.<account-subdomain>.workers.dev)
+        "PUBLIC_HOSTNAME": ""
+      },
+      "ratelimits": [
+        { "name": "PAGE_LIMITER", "namespace_id": "3001", "simple": { "limit": 120, "period": 60 } },
+        { "name": "API_LIMITER", "namespace_id": "3002", "simple": { "limit": 240, "period": 60 } }
+      ],
+      // Notification scheduler: daily 00:05 Asia/Manila (16:05 UTC). A no-op until CRON_API_KEY is set, and the
+      // backend leaves the outbox untouched while EMAIL_DELIVERY=disabled.
+      "triggers": { "crons": ["5 16 * * *"] }
+      // Custom domain (optional, after the zone is on Cloudflare):
+      // "routes": [{ "pattern": "smartwatts.example.com", "custom_domain": true }]
+    }
+  }
+}

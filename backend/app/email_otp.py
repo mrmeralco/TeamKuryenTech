@@ -10,6 +10,10 @@ Accounts Firebase already marks verified (e.g. Google sign-in) count as verified
 
 Codes: 6 digits, valid 10 minutes, max 5 wrong tries, 60 s resend cooldown, kept hashed
 in memory (they reset when the server restarts).
+
+Production (several short-lived instances, no shared disk: Cloud Run, Vercel) keeps both the hashed codes and
+the verified registry in Firestore instead (DocumentOtpStore / DocumentVerifiedRegistry, see app/persistence.py),
+so a code sent by one instance can be confirmed on another and verification survives restarts.
 """
 
 from __future__ import annotations
@@ -86,7 +90,82 @@ class OtpStore:
             return False
 
 
-store = OtpStore()
+class DocumentOtpStore:
+    """OtpStore with the same rules, kept in a document store (Firestore in production).
+
+    Only an HMAC of the code is stored (key derived from BOT_SECRET, identical on every instance). The document id
+    is a hash of purpose + email, so addresses are not used as ids. Consuming a code and counting a wrong attempt
+    are compare-and-update operations, so a code can be used once even when two instances check it at once."""
+
+    COLLECTION = "email_otp_codes"
+
+    def __init__(self, documents, key: bytes) -> None:
+        self._docs = documents
+        self._key = key
+
+    def _id(self, email: str, purpose: str) -> str:
+        return hashlib.sha256(f"{purpose}:{email}".encode()).hexdigest()[:40]
+
+    def _digest(self, email: str, purpose: str, code: str) -> str:
+        return hmac.new(self._key, f"{purpose}:{email}:{code}".encode(), hashlib.sha256).hexdigest()
+
+    def seconds_until_resend(self, email: str, purpose: str, now: float | None = None) -> int:
+        now = time.time() if now is None else now
+        entry = self._docs.get(self.COLLECTION, self._id(email, purpose))
+        if not entry:
+            return 0
+        return max(0, int(float(entry.get("sent_at", 0)) + RESEND_COOLDOWN_SECONDS - now + 0.999))
+
+    def issue(self, email: str, purpose: str, now: float | None = None) -> str:
+        from .rentals.store import AlreadyExistsError
+
+        now = time.time() if now is None else now
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        doc_id = self._id(email, purpose)
+        data = {"digest": self._digest(email, purpose, code), "expires_at": now + CODE_TTL_SECONDS,
+                "sent_at": now, "attempts": 0, "purpose": purpose}
+        if self._docs.get(self.COLLECTION, doc_id) is None:
+            try:
+                self._docs.create(self.COLLECTION, doc_id, data)
+                return code
+            except AlreadyExistsError:
+                pass
+        self._docs.update(self.COLLECTION, doc_id, data)
+        return code
+
+    def check(self, email: str, purpose: str, code: str, now: float | None = None) -> bool:
+        now = time.time() if now is None else now
+        doc_id = self._id(email, purpose)
+        entry = self._docs.get(self.COLLECTION, doc_id)
+        if not entry or not entry.get("digest") or float(entry.get("expires_at", 0)) < now:
+            return False
+        attempts = int(entry.get("attempts", 0))
+        if attempts >= MAX_ATTEMPTS:
+            return False
+        expected = {"digest": entry["digest"], "attempts": attempts}
+        if hmac.compare_digest(entry["digest"], self._digest(email, purpose, code)):
+            # Consumed: the digest is cleared (the sent_at stays, so the resend cooldown still applies).
+            return self._docs.compare_and_update(self.COLLECTION, doc_id, expected, {"digest": "", "expires_at": 0})
+        self._docs.compare_and_update(self.COLLECTION, doc_id, expected, {"attempts": attempts + 1})
+        return False
+
+
+def _otp_key() -> bytes:
+    """Same HMAC key on every instance (derived from BOT_SECRET, which production requires)."""
+    secret = os.getenv("BOT_SECRET", "").strip()
+    if not secret:
+        return secrets.token_bytes(32)
+    return hmac.new(secret.encode(), b"smartwatts-email-otp-v1", hashlib.sha256).digest()
+
+
+def _shared_documents():
+    from .persistence import shared_document_store
+
+    return shared_document_store()
+
+
+_documents = _shared_documents()
+store = DocumentOtpStore(_documents, _otp_key()) if _documents is not None else OtpStore()
 
 
 # --------------------------------------------------------------------------- verified registry
@@ -123,7 +202,33 @@ def _default_registry_path() -> Path:
     return Path(configured) if configured else Path(__file__).resolve().parent.parent / "data" / "verified_users.json"
 
 
-registry = VerifiedRegistry(_default_registry_path())
+class DocumentVerifiedRegistry:
+    """uid -> verified email, kept in a document store (Firestore in production)."""
+
+    COLLECTION = "verified_users"
+
+    def __init__(self, documents) -> None:
+        self._docs = documents
+
+    def is_verified(self, uid: str, email: str) -> bool:
+        entry = self._docs.get(self.COLLECTION, uid)
+        return bool(entry and entry.get("email") == email.lower())
+
+    def mark(self, uid: str, email: str) -> None:
+        from .rentals.store import AlreadyExistsError
+
+        data = {"email": email.lower(), "verifiedAt": int(time.time())}
+        if self._docs.get(self.COLLECTION, uid) is None:
+            try:
+                self._docs.create(self.COLLECTION, uid, data)
+                return
+            except AlreadyExistsError:
+                pass
+        self._docs.update(self.COLLECTION, uid, data)
+
+
+registry = (DocumentVerifiedRegistry(_documents) if _documents is not None
+            else VerifiedRegistry(_default_registry_path()))
 
 
 def is_user_verified(user: AuthUser) -> bool:
@@ -136,13 +241,18 @@ def is_user_verified(user: AuthUser) -> bool:
 MAILER_SCRIPT = Path(__file__).resolve().parents[2] / "mailer" / "send.mjs"
 
 
+def email_delivery_enabled() -> bool:
+    """False when EMAIL_DELIVERY=disabled (demo environments and every deployment until email is verified)."""
+    return os.getenv("EMAIL_DELIVERY", "").strip().lower() != "disabled"
+
+
 def send_email(template: str, to: str, data: dict) -> None:
     """Sends a SmartWatts email through the nodemailer script (Gmail app password from .env).
 
     ``EMAIL_DELIVERY=disabled`` (used by the emulator demo environment) blocks every delivery before
     the mailer process starts, so synthetic bills and statements can never email real recipients.
     """
-    if os.getenv("EMAIL_DELIVERY", "").strip().lower() == "disabled":
+    if not email_delivery_enabled():
         raise HTTPException(status_code=503, detail="Email delivery is disabled in this environment.")
     node = shutil.which("node")
     if not node or not MAILER_SCRIPT.exists():
@@ -234,9 +344,12 @@ class ResetConfirmRequest(BaseModel):
 
 
 def admin_available() -> bool:
-    """Changing a password requires the Firebase Admin SDK with a service account key."""
+    """Changing a password requires write-capable Firebase Admin credentials: a credentials file, or (Cloud Run)
+    the service account attached to the service, reached through the metadata server without any key file."""
     path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    return bool(path) and Path(path).is_file()
+    if path:
+        return Path(path).is_file()
+    return bool(os.getenv("K_SERVICE", "").strip())
 
 
 def _require_admin() -> None:

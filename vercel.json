@@ -10,30 +10,191 @@
     "app": {
       "root": "backend",
       "framework": "fastapi",
-      "entrypoint": "app.main:app",
-      "bindings": [
-        { "type": "service", "service": "web", "format": "url", "env": "WEB_URL" }
-      ]
+      "entrypoint": "app.main:app"
     }
   },
+  "redirects": [
+    {
+      "source": "/landing",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/landing/",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/landing/index.html",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/landing/login.html",
+      "destination": "/login",
+      "permanent": true
+    },
+    {
+      "source": "/landing/register.html",
+      "destination": "/register",
+      "permanent": true
+    },
+    {
+      "source": "/landing/forgot-password.html",
+      "destination": "/forgot-password",
+      "permanent": true
+    },
+    {
+      "source": "/landing/reset-password.html",
+      "destination": "/reset-password",
+      "permanent": true
+    },
+    {
+      "source": "/dashboard/",
+      "destination": "/dashboard",
+      "permanent": true
+    },
+    {
+      "source": "/nfc/",
+      "destination": "/nfc",
+      "permanent": true
+    }
+  ],
   "rewrites": [
-    { "source": "/(.*)", "destination": { "service": "app" } }
+    {
+      "source": "/api",
+      "destination": {
+        "service": "app"
+      }
+    },
+    {
+      "source": "/api/:path*",
+      "destination": {
+        "service": "app"
+      }
+    },
+    {
+      "source": "/__c.js",
+      "destination": {
+        "service": "app"
+      }
+    },
+    {
+      "source": "/__t",
+      "destination": {
+        "service": "app"
+      }
+    },
+    {
+      "source": "/__v",
+      "destination": {
+        "service": "app"
+      }
+    },
+    {
+      "source": "/",
+      "destination": {
+        "service": "web",
+        "path": "/landing/index.html"
+      }
+    },
+    {
+      "source": "/login",
+      "destination": {
+        "service": "web",
+        "path": "/landing/login.html"
+      }
+    },
+    {
+      "source": "/register",
+      "destination": {
+        "service": "web",
+        "path": "/landing/register.html"
+      }
+    },
+    {
+      "source": "/forgot-password",
+      "destination": {
+        "service": "web",
+        "path": "/landing/forgot-password.html"
+      }
+    },
+    {
+      "source": "/reset-password",
+      "destination": {
+        "service": "web",
+        "path": "/landing/reset-password.html"
+      }
+    },
+    {
+      "source": "/dashboard",
+      "destination": {
+        "service": "web",
+        "path": "/index.html"
+      }
+    },
+    {
+      "source": "/nfc",
+      "destination": {
+        "service": "web",
+        "path": "/nfc.html"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
   ],
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; connect-src 'self' data: blob: https://*.googleapis.com https://api.mapbox.com https://events.mapbox.com https://tessdata.projectnaptha.com https://cdn.jsdelivr.net; font-src 'self' data: https://fonts.gstatic.com; frame-src https://*.firebaseapp.com; worker-src 'self' blob:; media-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'" },
-        { "key": "Strict-Transport-Security", "value": "max-age=63072000; includeSubDomains" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "X-Frame-Options", "value": "DENY" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        { "key": "Permissions-Policy", "value": "camera=(self), microphone=(), geolocation=(self), payment=()" },
-        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin-allow-popups" },
-        { "key": "Cross-Origin-Resource-Policy", "value": "same-site" },
-        { "key": "X-Permitted-Cross-Domain-Policies", "value": "none" },
-        { "key": "X-DNS-Prefetch-Control", "value": "off" },
-        { "key": "X-Robots-Tag", "value": "noai, noimageai" }
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; connect-src 'self' data: blob: https://*.googleapis.com https://api.mapbox.com https://events.mapbox.com https://tessdata.projectnaptha.com https://cdn.jsdelivr.net; font-src 'self' data: https://fonts.gstatic.com; frame-src https://*.firebaseapp.com; worker-src 'self' blob:; media-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'"
+        },
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(self), microphone=(), geolocation=(self), payment=()"
+        },
+        {
+          "key": "Cross-Origin-Opener-Policy",
+          "value": "same-origin-allow-popups"
+        },
+        {
+          "key": "Cross-Origin-Resource-Policy",
+          "value": "same-site"
+        },
+        {
+          "key": "X-Permitted-Cross-Domain-Policies",
+          "value": "none"
+        },
+        {
+          "key": "X-DNS-Prefetch-Control",
+          "value": "off"
+        },
+        {
+          "key": "X-Robots-Tag",
+          "value": "noai, noimageai"
+        }
       ]
     }
   ]

@@ -57,6 +57,12 @@ npm run test:e2e
 
 Playwright may require `npx playwright install chromium` on a new machine.
 
+## Deploy (Cloudflare + Cloud Run)
+
+The site is served by a Cloudflare Worker (Static Assets) that proxies `/api/*` to the FastAPI backend on Cloud Run,
+under one HTTPS origin. Build with `npm run build:cloudflare`; check the whole stack locally with
+`node scripts/cloudflare-local-check.mjs --browser`. Full guide: [docs/CLOUDFLARE_DEPLOYMENT.md](docs/CLOUDFLARE_DEPLOYMENT.md).
+
 ## Included features
 
 - Dashboard, real-time/history views, analytics, device monitor, goals, rewards, billing, notifications, account, help, and about pages

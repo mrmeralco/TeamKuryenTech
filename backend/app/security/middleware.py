@@ -1,6 +1,8 @@
 """One ASGI middleware in front of the whole app (pages and API).
 
 Order of checks for every HTTP request:
+  0. proxy (Cloud Run behind the Cloudflare Worker, PROXY_SHARED_SECRET set): without the Worker's secret header
+     the request is refused; with it, the visitor IP and public hostname come from the Worker's headers
   1. request rules (step 3): method allow-list, URL length, framing headers, Host, body size
   2. bans (step 5): a banned IP gets 403 + Retry-After
   3. honeypots (step 5): a strike, then a plain 404
@@ -13,13 +15,14 @@ and strips headers that reveal the server. Unhandled exceptions become a generic
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 from urllib.parse import parse_qs
 
 from . import filters, limits, rules, site
 from .headers import REMOVED_HEADERS, SECURITY_HEADERS, security_header_items
-from .settings import SecuritySettings
+from .settings import PROXY_HOST_HEADER, PROXY_SECRET_HEADER, SecuritySettings
 from .shield import CLIENT_JS, COOKIE, Shield
 from .store import BAN_SECONDS, store_from_settings
 
@@ -27,6 +30,13 @@ logger = logging.getLogger("smartwatts.security")
 access_log = logging.getLogger("smartwatts.access")  # time comes from the log formatter / platform
 
 _SECURITY_KEYS = frozenset(k.lower().encode("latin-1") for k in SECURITY_HEADERS)
+_PROXY_SECRET_KEY = PROXY_SECRET_HEADER.encode("latin-1")
+# Public liveness probe: answered without the browser-check cookie and to any user agent (monitors, curl).
+HEALTH_PATH = "/api/health"
+
+
+def _is_health(scope) -> bool:
+    return scope["path"] == HEALTH_PATH and scope["method"] in ("GET", "HEAD")
 
 
 def _headers(scope) -> dict[str, str]:
@@ -75,6 +85,8 @@ class SecurityMiddleware:
     async def _shield(self, scope, headers, send) -> bool:
         """Step 13. Serves /__c.js, /__t, /__v and gates pages / API on the signed cookie. True = answered."""
         path, ua = scope["path"], headers.get("user-agent", "")
+        if _is_health(scope):
+            return False
         if path == "/__c.js":
             await raw_response(send, 200, CLIENT_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             return True
@@ -104,7 +116,14 @@ class SecurityMiddleware:
             return True
         return False
 
-    def _request_rule_violation(self, scope, headers) -> tuple[int, str, dict[str, str]] | None:
+    def _proxy_ok(self, headers) -> bool:
+        """True when no proxy is configured, or the request carries the Cloudflare Worker's shared secret."""
+        if not self.settings.proxy_secret:
+            return True
+        supplied = headers.get(PROXY_SECRET_HEADER, "")
+        return bool(supplied) and hmac.compare_digest(supplied.encode(), self.settings.proxy_secret.encode())
+
+    def _request_rule_violation(self, scope, headers, host: str) -> tuple[int, str, dict[str, str]] | None:
         method = scope["method"]
         if method not in rules.ALLOWED_METHODS:
             return 405, "Method not allowed", {"Allow": rules.ALLOW_HEADER}
@@ -114,7 +133,7 @@ class SecurityMiddleware:
             return 414, "URI too long", {}
         if "transfer-encoding" in headers and "content-length" in headers:
             return 400, "Bad request", {}
-        if not rules.host_allowed(headers.get("host", ""), self.settings.allowed_hosts, self.settings.production):
+        if not rules.host_allowed(host, self.settings.allowed_hosts, self.settings.production):
             return 400, "Bad request", {}
         declared = headers.get("content-length")
         if declared is not None and (not declared.isdigit() or int(declared) > rules.body_limit(scope["path"])):
@@ -127,7 +146,7 @@ class SecurityMiddleware:
         why = filters.attack_reason(path, scope.get("query_string", b"").decode("latin-1"), headers)
         if why:
             raise Blocked(403, "Forbidden", strike=why)
-        if not self.settings.shield:
+        if not self.settings.shield or _is_health(scope):
             return  # user-agent rules belong to the bot protection, on in production
         if "x-api-key" in headers and path.startswith("/api/notifications/"):
             return  # scheduler jobs (curl etc.) prove themselves with the key, checked by the route
@@ -193,9 +212,21 @@ class SecurityMiddleware:
             await send(message)
 
         headers = _headers(scope)
-        ip = limits.client_ip(scope, headers, self.settings.client_ip_header)
+        proxied = self._proxy_ok(headers)
+        # Only an authenticated proxy may name the visitor's IP; otherwise the socket peer is used.
+        ip = limits.client_ip(scope, headers, self.settings.client_ip_header if proxied else "")
         try:
-            violation = self._request_rule_violation(scope, headers)
+            if not proxied:
+                reason = "not via proxy"
+                await json_response(send_with_headers, 403, {"detail": "Forbidden"})
+                return
+            host = headers.get("host", "")
+            if self.settings.proxy_secret:
+                # The Worker reaches Cloud Run by its *.run.app name; the visitor's hostname travels in a header.
+                host = headers.get(PROXY_HOST_HEADER, "")
+                # The app below never sees the shared secret (nothing can log or echo it).
+                scope = {**scope, "headers": [(k, v) for k, v in scope.get("headers", []) if k.lower() != _PROXY_SECRET_KEY]}
+            violation = self._request_rule_violation(scope, headers, host)
             if violation:
                 status, reason, extra = violation
                 await json_response(send_with_headers, status, {"detail": reason}, extra)

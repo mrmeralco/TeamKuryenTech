@@ -67,9 +67,31 @@ function landingRoutes(): Plugin {
   };
 }
 
+/**
+ * Deployment builds fail instead of shipping a dashboard that silently has no Firebase (VITE_FIREBASE_* are
+ * inlined at build time; the repo's .env is never uploaded) or that talks to the local emulators. Applies on
+ * Vercel (VERCEL is set by the platform) and to `npm run build:cloudflare` (SMARTWATTS_DEPLOY_BUILD=cloudflare).
+ * Local builds are unaffected.
+ */
+const REQUIRED_DEPLOY_ENV = ["VITE_FIREBASE_API_KEY", "VITE_FIREBASE_AUTH_DOMAIN", "VITE_FIREBASE_PROJECT_ID", "VITE_FIREBASE_APP_ID"];
+function deployEnvGuard(): Plugin {
+  return {
+    name: "smartwatts-deploy-env-guard",
+    apply: "build",
+    configResolved(config) {
+      const target = process.env.VERCEL ? "Vercel" : process.env.SMARTWATTS_DEPLOY_BUILD === "cloudflare" ? "Cloudflare" : "";
+      if (!target) return;
+      const problems = REQUIRED_DEPLOY_ENV.filter((name) => !config.env[name]).map((name) => `${name} is not set`);
+      if (config.env.VITE_USE_FIREBASE_EMULATORS === "true") problems.push(`VITE_USE_FIREBASE_EMULATORS must not be true on ${target}`);
+      if (problems.length) throw new Error(`Refusing to build for ${target}:\n  - ${problems.join("\n  - ")}`);
+    },
+  };
+}
+
 export default defineConfig({
   base: "./",
   plugins: [
+    deployEnvGuard(),
     landingRoutes(),
     react(),
     tailwindcss(),

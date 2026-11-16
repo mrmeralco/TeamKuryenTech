@@ -4,17 +4,50 @@ How the production site is protected, how to configure it, and what to do during
 The app itself (FastAPI, `backend/app/security/`) handles headers, request rules, validation, rate limits,
 bans and the browser check. The edge (Vercel Firewall) is what stops a large DDoS: the app can't.
 
+## Deployment shape (Cloudflare + Cloud Run)
+
+The Cloudflare shape is documented in [CLOUDFLARE_DEPLOYMENT.md](CLOUDFLARE_DEPLOYMENT.md). Security-relevant points:
+
+- The Worker (`cloudflare/app.js`) serves pages and files from Workers Static Assets and proxies `/api/*`,
+  `/__t`, `/__v`, `/__c.js` to Cloud Run. Every response carries the same security headers as the backend
+  (`cloudflare/security-headers.json`, kept identical by `backend/tests/test_cloudflare_proxy.py`).
+- `PROXY_SHARED_SECRET`: the backend refuses (403) any request without the Worker's `x-smartwatts-proxy` header, so
+  the public `*.run.app` URL cannot be used to skip the edge. Only with that header does the backend accept the
+  visitor IP (`x-smartwatts-client-ip`, for per-IP limits and bans) and the public hostname (`x-smartwatts-host`,
+  checked against `ALLOWED_HOSTS`). The Worker drops any `x-smartwatts-*`, `cf-*` and `x-forwarded-*` header a
+  visitor sends, and the secret is removed before the request reaches a route. Required on Cloud Run.
+- Edge rate limits per IP (Workers Rate Limiting): 120 page loads and 240 API calls per minute, in front of the
+  backend's own limits, strikes and bans. As with Vercel, the page-level browser challenge no longer runs (the API
+  still requires the browser-check cookie); add Cloudflare Bot Fight Mode / WAF rules for page-level protection.
+- `GET /api/health` is public (no cookie, any user agent) for uptime monitors. It returns only `{"status":"ok"}`.
+- Durable server state (notification outbox, preferences, reminder registry, email codes, verified accounts) is in
+  Firestore in production (`backend/app/persistence.py`); those collections are server-only (the rules' catch-all
+  denies clients).
+
 ## Deployment shape (Vercel)
 
 `vercel.json` defines two services:
 
-| Service | What | Public? |
+| Service | What | Routes |
 |---|---|---|
-| `web` | the static build (`npm run build && node scripts/prepare-hosting.mjs` → `dist/`) | **No** (no rewrite targets it) |
-| `app` | FastAPI (`backend/`, entrypoint `app.main:app`) | Yes: `/(.*)` → `app` |
+| `app` | FastAPI (`backend/`, entrypoint `app.main:app`, Python 3.13 via `backend/.python-version`) | `/api`, `/api/*`, and the browser-check endpoints `/__c.js`, `/__t`, `/__v` |
+| `web` | the static build (`npm run build:prod` → `dist/`) | everything else |
 
-Every request (pages and API) reaches FastAPI first. After the guards pass, pages and files are fetched from
-`web` through the service binding `WEB_URL` (`backend/app/security/site.py`).
+Clean URLs are top-level rewrites to `web` (`/` → `landing/index.html`, `/login`, `/register`,
+`/forgot-password`, `/reset-password` → `landing/*.html`, `/dashboard` → `index.html`, `/nfc` → `nfc.html`), the
+same mapping as `firebase.json` and `backend/app/security/site.py` (`backend/tests/test_vercel_routing.py` keeps
+them in sync). Old `/landing/*.html`, `/dashboard/` and `/nfc/` URLs redirect. `/index.html` and `/nfc.html` are
+never redirected: the service worker precaches them.
+
+What this changes compared with routing every request through FastAPI: pages and static files no longer pass
+the app's page rate limits, honeypots or the page-level browser challenge. The API still requires the
+browser-check cookie; every page loads `/shield-client.js`, which solves the puzzle (`/__t` → `/__v`) on the first
+"Verification required" answer and retries. Use the Vercel Firewall rules below for page-level rate limits.
+(`site.py` still serves a local build when `WEB_DIR` is set, e.g. on a VPS with `serve.py`.)
+
+Vercel builds stop with an error when `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`,
+`VITE_FIREBASE_PROJECT_ID` or `VITE_FIREBASE_APP_ID` is missing, or `VITE_USE_FIREBASE_EMULATORS=true`
+(`vite.config.ts`). `.vercelignore` keeps `.env*`, service-account files and `backend/data/` out of CLI uploads.
 
 ## Environment variables (Vercel → Project → Settings → Environment Variables)
 
@@ -23,13 +56,16 @@ Every request (pages and API) reaches FastAPI first. After the guards pass, page
 | `BOT_SECRET` | **yes** (≥ 32 chars) | `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `ALLOWED_HOSTS` | **yes** | `smartwatts.vercel.app` (comma-separate extra domains). The deployment's own `*.vercel.app` URLs are always accepted. |
 | `FIREBASE_PROJECT_ID` | yes (auth + shared bans) | `smartwatts-266cc` |
+| `GOOGLE_APPLICATION_CREDENTIALS_JSON` | yes for Firestore/Rentals/bans | a Workload Identity Federation (`external_account`) config, or a service-account key JSON (raw or base64). Written to a 0600 temp file at startup; a malformed value stops startup without showing it. Without it, Firestore-backed routes answer 503. |
+| `VITE_FIREBASE_API_KEY`, `_AUTH_DOMAIN`, `_PROJECT_ID`, `_APP_ID` | **yes** (build) | public web config, inlined by Vite |
+| `EMAIL_DELIVERY` | recommended `disabled` | the Node mailer cannot run in the Python function; `disabled` makes every send answer 503 immediately |
 | `GEMINI_API_KEY`, `GOOGLE_TRANSLATE_API_KEY`, `SMTP_*`, … | feature keys | as before |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | no | only if you add Redis later |
 | `CRON_API_KEY_SHA256` | no | SHA-256 of the key a scheduler sends in `x-api-key` |
 | `ATTACK_MODE` | no | `1` forces the app's own attack mode on |
 
 Production refuses to start when `BOT_SECRET` is missing or short, or `ALLOWED_HOSTS` is missing, and the
-error says which variable and how to generate it. `WEB_URL` is injected by Vercel; never set it yourself.
+error says which variable and how to generate it. Vercel preview deployments count as production here.
 
 Also add `smartwatts.vercel.app` to Firebase Console → Authentication → Settings → **Authorized domains**,
 and restrict the Firebase web API key (Google Cloud Console → APIs & Services → Credentials) to your domain.

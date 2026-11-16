@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:prod": "npm run build && node scripts/prepare-hosting.mjs && node scripts/protect-build.mjs",
+    "build:cloudflare": "node scripts/cloudflare-build.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -19,7 +20,12 @@
     "test:e2e:mapbox": "playwright test --config playwright.mapbox.config.ts",
     "test:e2e:nfc": "firebase emulators:exec --only auth --project demo-smartwatts \"playwright test --config playwright.nfc.config.ts\"",
     "demo:emulator": "bash scripts/demo-emulator.sh",
-    "test:e2e:demo": "firebase emulators:exec --config firebase.demo.json --only auth,firestore --project demo-smartwatts \"playwright test --config playwright.demo.config.ts\""
+    "test:e2e:demo": "firebase emulators:exec --config firebase.demo.json --only auth,firestore --project demo-smartwatts \"playwright test --config playwright.demo.config.ts\"",
+    "cf:dev": "wrangler dev",
+    "cf:check:preview": "node scripts/cloudflare-preflight.mjs preview && wrangler deploy --env preview --dry-run --outdir .wrangler/dry-run",
+    "cf:check:production": "node scripts/cloudflare-preflight.mjs production && wrangler deploy --env production --dry-run --outdir .wrangler/dry-run",
+    "cf:deploy:preview": "node scripts/cloudflare-preflight.mjs preview && wrangler deploy --env preview",
+    "cf:deploy:production": "node scripts/cloudflare-preflight.mjs production && wrangler deploy --env production"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.4.1",
@@ -55,7 +61,8 @@
     "typescript": "~5.7.2",
     "vite": "^6.2.5",
     "vite-plugin-pwa": "^0.21.1",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "wrangler": "^4.161.0"
   },
   "overrides": {
     "@grpc/grpc-js": "^1.13.6"
